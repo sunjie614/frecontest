@@ -31,7 +31,7 @@ static inline void ParkTransform(float_t Ialpha, float_t Ibeta, float_t theta,
                                  FOC_Parameter_t* out);
 static inline void InvParkTransform(float_t Udaxis, float_t Uqaxis, float_t theta, InvPark_t* out);
 static inline void SVPWM_Generate(float Ualpha, float Ubeta, float inv_Vdc, FOC_Parameter_t* foc);
-
+static inline float sat(float x);
 // SECTION - FOC Main
 void FOC_Main(void)
 {
@@ -102,7 +102,7 @@ void FOC_Main(void)
         PID_Controller(RampGenerator(&Speed_Ramp), FOC.Speed, &Speed_PID);
       }
 
-      FOC.Iq_ref = Speed_PID.output;          // Iq_ref = Speed_PID.output
+      FOC.Iq_ref = Speed_PID.output;       // Iq_ref = Speed_PID.output
       FOC.Id_ref = 0.48648F * FOC.Iq_ref;  // Id_ref = 1.54 * Iq_ref
 
       PID_Controller(FOC.Id_ref, FOC.Id, &Id_PID);
@@ -130,10 +130,14 @@ void FOC_Main(void)
 
       SquareWaveGenerater(&VoltageInjector, &FOC);
       // HighFrequencySquareWaveGenerater(&VoltageInjector);
+      static volatile float K_dabc = 8.0F;  // 这个系数需要根据实际电压和电流范围进行调整
+      float dua = sat(FOC.Ia) * K_dabc;
+      float dub = sat(FOC.Ib) * K_dabc;
+      float duc = sat(FOC.Ic) * K_dabc;
 
       FOC.Ud_ref = VoltageInjector.Vd;
       FOC.Uq_ref = VoltageInjector.Vq;
-      //FOC.Theta = VoltageInjector.Theta;  // 保持当前 Theta
+      // FOC.Theta = VoltageInjector.Theta;  // 保持当前 Theta
       break;
     }
     // !SECTION
@@ -160,7 +164,7 @@ void FOC_UpdateMainFrequency(float f, float Ts, float PWM_ARR)
 void Parameter_Init(void)
 {
   memset(&VF, 0, sizeof(VF_Parameter_t));
-  //memset(&FOC, 0, sizeof(FOC_Parameter_t));
+  // memset(&FOC, 0, sizeof(FOC_Parameter_t));
   memset(&Id_PID, 0, sizeof(PID_Controller_t));
   memset(&Iq_PID, 0, sizeof(PID_Controller_t));
   memset(&Speed_PID, 0, sizeof(PID_Controller_t));
@@ -409,7 +413,12 @@ static inline void InvParkTransform(float_t Ud, float_t Uq, float_t theta, InvPa
   out->Ualpha = Ud * cos_theta - Uq * sin_theta;
   out->Ubeta = Ud * sin_theta + Uq * cos_theta;
 }
-
+static inline float sat(float x)
+{
+  if (x > 0.5F) return 1.0F;
+  if (x < -0.5F) return -1.0F;
+  return 2 * x;
+}
 static inline float Get_Theta(float Freq, float Theta)
 {
   // 电角度递推：θ += ω·Ts，ω = 2π·f

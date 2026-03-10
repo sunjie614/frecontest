@@ -274,7 +274,7 @@ void Parameter_Init(void)
   Motor.Position_Scale = 10000 - 1;
   Motor.Resolver_Pn = 1.0F;
   Motor.inv_MotorPn = 1.0F / 2.0F;  // Pn
-  Motor.Position_Offset = 1840.0F;
+  Motor.Position_Offset = 6838.0F;
 
   MTPA.A = 0.00061141F;
   MTPA.B = -0.014627F;

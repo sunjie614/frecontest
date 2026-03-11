@@ -130,13 +130,35 @@ void FOC_Main(void)
 
       SquareWaveGenerater(&VoltageInjector, &FOC);
       // HighFrequencySquareWaveGenerater(&VoltageInjector);
-      static volatile float K_dabc = 8.0F;  // 这个系数需要根据实际电压和电流范围进行调整
+      static volatile float K_dabc = 0.0F;  // 这个系数需要根据实际电压和电流范围进行调整
       float dua = sat(FOC.Ia) * K_dabc;
       float dub = sat(FOC.Ib) * K_dabc;
       float duc = sat(FOC.Ic) * K_dabc;
 
-      FOC.Ud_ref = VoltageInjector.Vd;
-      FOC.Uq_ref = VoltageInjector.Vq;
+      float Udin = VoltageInjector.Vd;
+      float Uqin = VoltageInjector.Vq;
+      float theta = FOC.Theta;
+      // 1. 逆 Park 变换 (d,q -> α,β)
+      float COS_theta = COS(theta);
+      float SIN_theta = SIN(theta);
+      float Ualphain = Udin * COS_theta - Uqin * SIN_theta;
+      float Ubetain = Udin * SIN_theta + Uqin * COS_theta;
+      // 2. 逆 Clark 变换 (α,β -> a,b,c)  —— 等幅值变换
+      float Ua = Ualphain;
+      float Ub = -0.5f * Ualphain + 0.86602540378f * Ubetain;  // 0.8660254 = sqrt(3)/2
+      float Uc = -0.5f * Ualphain - 0.86602540378f * Ubetain;
+      float Ua_in = dua + Ua;
+      float Ub_in = dub + Ub;
+      float Uc_in = duc + Uc;
+      // 1. Clark 变换 (通用等幅值)
+      float Ualpha = (2.0f / 3.0f) * (Ua_in - 0.5f * Ub_in - 0.5f * Uc_in);
+      float Ubeta =(2.0f / 3.0f) * (0.86602540378f * Ub_in - 0.86602540378f * Uc_in);  // √3/2 ≈ 0.8660254
+      // 2. Park 变换
+      float Ud = Ualpha * COS_theta + Ubeta * SIN_theta;
+      float Uq = -Ualpha * SIN_theta + Ubeta * COS_theta;
+
+      FOC.Ud_ref = Ud;
+      FOC.Uq_ref = Uq;
       // FOC.Theta = VoltageInjector.Theta;  // 保持当前 Theta
       break;
     }

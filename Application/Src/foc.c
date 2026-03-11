@@ -152,7 +152,8 @@ void FOC_Main(void)
       float Uc_in = duc + Uc;
       // 1. Clark 变换 (通用等幅值)
       float Ualpha = (2.0f / 3.0f) * (Ua_in - 0.5f * Ub_in - 0.5f * Uc_in);
-      float Ubeta =(2.0f / 3.0f) * (0.86602540378f * Ub_in - 0.86602540378f * Uc_in);  // √3/2 ≈ 0.8660254
+      float Ubeta =
+          (2.0f / 3.0f) * (0.86602540378f * Ub_in - 0.86602540378f * Uc_in);  // √3/2 ≈ 0.8660254
       // 2. Park 变换
       float Ud = Ualpha * COS_theta + Ubeta * SIN_theta;
       float Uq = -Ualpha * SIN_theta + Ubeta * COS_theta;
@@ -204,7 +205,7 @@ void Parameter_Init(void)
   Motor.Position_Scale = 10000 - 1;
   Motor.Resolver_Pn = 1.0F;
   Motor.inv_MotorPn = 1.0F / 2.0F;  // Pn
-  Motor.Position_Offset = 1840.0F;
+  Motor.Position_Offset = 6838.0F;
 
 #ifdef Resolver_Position
   theta_factor = M_2PI / ((Motor.Position_Scale + 1) * Motor.Resolver_Pn);

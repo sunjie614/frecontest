@@ -35,11 +35,11 @@ OF SUCH DAMAGE.
 #include "gd32f30x_it.h"
 #include "can.h"
 #include "foc.h"
-#include "hardware_interface.h"
 #include "gd32f30x.h"
+#include "hardware_interface.h"
 #include "injection.h"
-#include "systick.h"
 #include "justfloat.h"
+#include "systick.h"
 
 extern volatile uint16_t STOP;
 float Id_max = 0.0F;
@@ -109,7 +109,6 @@ void UsageFault_Handler(void)
   }
 }
 
-
 /*!
     \brief      this function handles DebugMon exception
     \param[in]  none
@@ -117,7 +116,6 @@ void UsageFault_Handler(void)
     \retval     none
 */
 void DebugMon_Handler(void) {}
-
 
 /*!
     \brief      this function handles SysTick exception
@@ -133,11 +131,11 @@ void SysTick_Handler(void)
 
 void DMA0_Channel3_IRQHandler(void)
 {
-    if (dma_interrupt_flag_get(DMA0, DMA_CH3, DMA_INT_FLAG_FTF))
-    {
-        dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_FTF);
-        Peripheral_SCISendCallback();
-    }
+  if (dma_interrupt_flag_get(DMA0, DMA_CH3, DMA_INT_FLAG_FTF))
+  {
+    dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_FTF);
+    Peripheral_SCISendCallback();
+  }
 }
 
 void USBD_LP_CAN0_RX0_IRQHandler(void)
@@ -157,8 +155,6 @@ void ADC0_1_IRQHandler(void)
     Peripheral_GateState();
     Peripheral_UpdateUdc();
     Peripheral_UpdatePosition();
-
-    
 
     switch (FOC.Mode)
     {
@@ -190,13 +186,13 @@ void ADC0_1_IRQHandler(void)
         }
 
         float DMA_Buffer[7];
-        DMA_Buffer[0] = VoltageInjector.Vd;
-        DMA_Buffer[1] = VoltageInjector.Vq;
+        DMA_Buffer[0] = FOC.Ud_ref;
+        DMA_Buffer[1] = FOC.Uq_ref;
         DMA_Buffer[2] = FOC.Id;
         DMA_Buffer[3] = FOC.Iq;
         DMA_Buffer[4] = (float)VoltageInjector.Count;
-        DMA_Buffer[5] =FOC.Position;
-        float We=2*FOC.Speed * M_2PI / 60.0F;
+        DMA_Buffer[5] = FOC.Position;
+        float We = 2 * FOC.Speed * M_2PI / 60.0F;
         DMA_Buffer[6] = We;
         justfloat(DMA_Buffer, 7);
         break;
@@ -236,7 +232,7 @@ void TIMER0_BRK_IRQHandler(void)
     // 清除 Break 中断标志
     timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_BRK);
     STOP = 1;
-    if (Software_BRK == false)
+    if (Software_BRK == true)
     {
       Protect.Flag |= Hardware_Fault;
       timer_interrupt_disable(TIMER0, TIMER_INT_BRK);  // 禁用BRK中断

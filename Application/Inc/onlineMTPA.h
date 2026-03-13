@@ -49,6 +49,9 @@ extern "C"
   extern volatile float g_identIsMin;     /* A，电流幅值门限，小于冻结 */
   extern volatile float g_identWeMin;     /* rad/s，电角速度门限，小于冻结 */
   extern volatile uint8_t g_freezeOnVsat; /* 1:电压饱和冻结 */
+  extern volatile uint8_t g_freezeOnSteady; /* 1: freeze identification when a bin is near steady state */
+  extern volatile float g_steadyDidTh;      /* A, |id_end-id_start| threshold */
+  extern volatile float g_steadyDiqTh;      /* A, |iq_end-iq_start| threshold */
 
   /* MTPA 配置 */
   extern volatile float g_gammaMin;        /* rad，默认1e-3 */

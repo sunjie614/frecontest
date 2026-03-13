@@ -25,6 +25,10 @@ volatile float g_identIsMin = 2.0f;
 volatile float g_identWeMin = 10.0f; /* rad/s，低速冻结 */
 volatile uint8_t g_freezeOnVsat = 1u;
 
+volatile uint8_t g_freezeOnSteady = 0u;
+volatile float g_steadyDidTh = 0.10f;
+volatile float g_steadyDiqTh = 0.10f;
+
 volatile float g_gammaMin = 0.75f + 1e-3f;
 volatile float g_gammaMax = 1.5707963f - 1e-3f;
 volatile float g_gammaStepMaxDeg = 5.0f;
@@ -74,6 +78,25 @@ static inline float sqrf(float x)
 {
   return x * x;
 }
+
+static void abort_current_bin(void)
+{
+  st.cnt = 0u;
+  st.sum_bd = 0.0f;
+  st.sum_bq = 0.0f;
+  for (int i = 0; i < 5; i++)
+  {
+    st.sum_wphid[i] = 0.0f;
+    st.sum_wphiq[i] = 0.0f;
+  }
+  st.start_sum_id = 0.0f;
+  st.start_sum_iq = 0.0f;
+  st.start_cnt = 0u;
+  st.end_sum_id = 0.0f;
+  st.end_sum_iq = 0.0f;
+  st.end_cnt = 0u;
+}
+
 
 static void basis_5(float id, float iq, float phi_d[5], float phi_q[5])
 {
@@ -286,7 +309,11 @@ float onlineMTPA_torque_proxy(float id, float iq)
 /* 10kHz 辨识 step */
 void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float Rs0, uint8_t flags)
 {
-  if (!g_identEnable) return;
+  if (!g_identEnable)
+  {
+    abort_current_bin();
+    return;
+  }
 
   uint16_t M = g_binSamples;
   if (M < 1u) M = 1u;
@@ -298,10 +325,26 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
 
   /* 门控：低速/小电流/电压饱和冻结（直接不更新这一bin） */
   float Is = sqrtf(id * id + iq * iq);
-  if (Is < g_identIsMin) return;
-  if (fabsf(we) < g_identWeMin) return;
-  if (g_freezeOnVsat && (flags & ONLINE_MTPA_FLAG_VSAT)) return;
-  if (flags & ONLINE_MTPA_FLAG_BAD_V) return;
+  if (Is < g_identIsMin)
+  {
+    abort_current_bin();
+    return;
+  }
+  if (fabsf(we) < g_identWeMin)
+  {
+    abort_current_bin();
+    return;
+  }
+  if (g_freezeOnVsat && (flags & ONLINE_MTPA_FLAG_VSAT))
+  {
+    abort_current_bin();
+    return;
+  }
+  if (flags & ONLINE_MTPA_FLAG_BAD_V)
+  {
+    abort_current_bin();
+    return;
+  }
 
   /* bin开始：清零累计 */
   if (st.cnt == 0u)
@@ -362,6 +405,17 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   float iq_start = (st.start_cnt > 0u) ? (st.start_sum_iq / (float)st.start_cnt) : iq;
   float id_end = (st.end_cnt > 0u) ? (st.end_sum_id / (float)st.end_cnt) : id;
   float iq_end = (st.end_cnt > 0u) ? (st.end_sum_iq / (float)st.end_cnt) : iq;
+
+  if (g_freezeOnSteady)
+  {
+    float did = fabsf(id_end - id_start);
+    float diq = fabsf(iq_end - iq_start);
+    if ((did < g_steadyDidTh) && (diq < g_steadyDiqTh))
+    {
+      abort_current_bin();
+      return;
+    }
+  }
 
   float phi_ds[5], phi_qs[5], phi_de[5], phi_qe[5];
   basis_5(id_start, iq_start, phi_ds, phi_qs);
@@ -494,7 +548,7 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   }
 
   /* bin复位 */
-  st.cnt = 0u;
+  abort_current_bin();
 }
 
 /* ---------------- MTPA 求解（解析） ---------------- */

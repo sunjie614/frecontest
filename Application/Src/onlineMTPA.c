@@ -13,25 +13,28 @@ volatile float g_lc = 0.0f;
 
 volatile float g_beta = 0.95f;
 volatile float g_lambda = 1e-8f;
-volatile float g_smoothFcHz = 10.0f;
+volatile float g_smoothFcHz = 5.0f;
+volatile float g_outputFcHz10k = 5.0f;
 
-volatile uint16_t g_binSamples = 20u; /* 2ms */
+volatile uint16_t g_binSamples = 40u; /* 2ms */
 volatile uint16_t g_edgeSamples = 5u;
-volatile uint16_t g_solveDecim = 5u; /* 每10ms解一次 */
+volatile uint16_t g_solveDecim = 1u; /* 每10ms解一次 */
 
 volatile uint8_t g_fixLdLq = 0u;
 volatile uint8_t g_identEnable = 1u;
-volatile float g_identIsMin = 2.0f;
-volatile float g_identWeMin = 10.0f; /* rad/s，低速冻结 */
+volatile float g_identIsMin = 3.0f;
+volatile float g_identWeMin = 5.0f; /* rad/s，低速冻结 */
 volatile uint8_t g_freezeOnVsat = 1u;
 
-volatile uint8_t g_freezeOnSteady = 0u;
-volatile float g_steadyDidTh = 0.10f;
-volatile float g_steadyDiqTh = 0.10f;
+volatile uint8_t g_freezeOnSteady = 1u;
+volatile float g_steadyDidTh = 0.15f;
+volatile float g_steadyDiqTh = 0.15f;
 
 volatile float g_gammaMin = 0.75f + 1e-3f;
 volatile float g_gammaMax = 1.5707963f - 1e-3f;
-volatile float g_gammaStepMaxDeg = 5.0f;
+volatile float g_gammaStepMaxDeg = 0.1f;
+volatile float gamma_deg = 0.0f;
+volatile uint8_t enable_45 = 0.0f;
 /* ---------------- 内部状态 ---------------- */
 typedef struct
 {
@@ -58,12 +61,15 @@ typedef struct
   /* 当前解 & 平滑解 */
   float xhat[5];
   float xhat_f[5];
+  float xhat_out[5];
 
   /* 平滑系数（随 binSamples 变化） */
   float alpha;
+  float alpha_out_10k;
 } ident_state_t;
 
 static ident_state_t st;
+static float s_param_init[5];
 static float s_gamma_prev = 0.0f;
 static uint8_t s_gamma_prev_valid = 0u;
 /* ---------------- 工具函数（小计算量） ---------------- */
@@ -97,7 +103,6 @@ static void abort_current_bin(void)
   st.end_cnt = 0u;
 }
 
-
 static void basis_5(float id, float iq, float phi_d[5], float phi_q[5])
 {
   /* phi_d = [id, id^3, 0, 0, id*iq^2]
@@ -126,7 +131,9 @@ static void update_alpha(void)
   if (M < 1u) M = 1u;
   if (M > ONLINE_MTPA_MAX_BIN_SAMPLES) M = ONLINE_MTPA_MAX_BIN_SAMPLES;
 
-  float dt = (float)M * ONLINE_MTPA_TS_CTRL;
+  uint16_t dec = g_solveDecim;
+  if (dec < 1u) dec = 1u;
+  float dt = (float)M * (float)dec * ONLINE_MTPA_TS_CTRL;
   if (fc <= 0.0f)
   {
     st.alpha = 1.0f;
@@ -134,6 +141,39 @@ static void update_alpha(void)
   }
   float a = expf(-2.0f * 3.1415926f * fc * dt);
   st.alpha = 1.0f - a;
+}
+
+static void update_output_alpha_10k(void)
+{
+  float fc = g_outputFcHz10k;
+  if (fc <= 0.0f)
+  {
+    st.alpha_out_10k = 1.0f;
+    return;
+  }
+  float a = expf(-2.0f * 3.1415926f * fc * ONLINE_MTPA_TS_CTRL);
+  st.alpha_out_10k = 1.0f - a;
+}
+
+static void publish_output_params(const float x[5])
+{
+  g_ld = x[0];
+  g_ldd = x[1];
+  g_lq = x[2];
+  g_lqq = x[3];
+  g_lc = x[4];
+}
+
+static void output_filter_step_10k(float Is2)
+{
+  float a = clampf(st.alpha_out_10k, 0.0f, 1.0f);
+  float IsMin2 = sqrf(g_identIsMin);
+  const float* xtarget = (Is2 < IsMin2) ? s_param_init : st.xhat_f;
+  for (int i = 0; i < 5; i++)
+  {
+    st.xhat_out[i] += a * (xtarget[i] - st.xhat_out[i]);
+  }
+  publish_output_params(st.xhat_out);
 }
 
 /* Cholesky 求解 5x5 SPD: A x = b
@@ -233,9 +273,13 @@ void onlineMTPA_init(void)
   st.xhat[3] = g_lqq;
   st.xhat[4] = g_lc;
 
+  for (int i = 0; i < 5; i++) s_param_init[i] = st.xhat[i];
   for (int i = 0; i < 5; i++) st.xhat_f[i] = st.xhat[i];
+  for (int i = 0; i < 5; i++) st.xhat_out[i] = st.xhat_f[i];
 
   update_alpha();
+  update_output_alpha_10k();
+  publish_output_params(st.xhat_out);
   s_gamma_prev = 0.0f;
   s_gamma_prev_valid = 0u;
 }
@@ -249,9 +293,13 @@ void onlineMTPA_reset_ident(void)
   st.xhat[3] = g_lqq;
   st.xhat[4] = g_lc;
 
+  for (int i = 0; i < 5; i++) s_param_init[i] = st.xhat[i];
   for (int i = 0; i < 5; i++) st.xhat_f[i] = st.xhat[i];
+  for (int i = 0; i < 5; i++) st.xhat_out[i] = st.xhat_f[i];
 
   update_alpha();
+  update_output_alpha_10k();
+  publish_output_params(st.xhat_out);
   s_gamma_prev = 0.0f;
   s_gamma_prev_valid = 0u;
 }
@@ -309,6 +357,8 @@ float onlineMTPA_torque_proxy(float id, float iq)
 /* 10kHz 辨识 step */
 void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float Rs0, uint8_t flags)
 {
+  float Is2 = id * id + iq * iq;
+  output_filter_step_10k(Is2);
   if (!g_identEnable)
   {
     abort_current_bin();
@@ -324,7 +374,7 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   if (edgeN > M) edgeN = M;
 
   /* 门控：低速/小电流/电压饱和冻结（直接不更新这一bin） */
-  float Is = sqrtf(id * id + iq * iq);
+  float Is = sqrtf(Is2);
   if (Is < g_identIsMin)
   {
     abort_current_bin();
@@ -464,12 +514,13 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   uint16_t dec = g_solveDecim;
   if (dec < 1u) dec = 1u;
 
-  if (st.bins_acc >= 10u && (st.solve_cnt >= dec))
+  if (st.bins_acc >= 40u && (st.solve_cnt >= dec))
   {
     st.solve_cnt = 0u;
 
     /* 更新平滑系数（binSamples 或 fc 可被上位机改） */
     update_alpha();
+    update_output_alpha_10k();
 
     /* Sreg = S + lambda*I */
     float Sreg[5][5];
@@ -540,11 +591,7 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
     }
 
     /* 写回全局参数（上位机也可读） */
-    g_ld = st.xhat_f[0];
-    g_ldd = st.xhat_f[1];
-    g_lq = st.xhat_f[2];
-    g_lqq = st.xhat_f[3];
-    g_lc = st.xhat_f[4];
+    /* output params are published by output_filter_step_10k() */
   }
 
   /* bin复位 */

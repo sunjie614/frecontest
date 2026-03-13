@@ -5,7 +5,7 @@
 #define CAN_TX_BUFFER_SIZE 8
 
 #define SCI_TX_BUFFER_SIZE 8
-#define MAX_FLOATS_PER_FRAME 8
+#define MAX_FLOATS_PER_FRAME 16
 
 static can_frame_t can_tx_buffer[CAN_TX_BUFFER_SIZE];
 static volatile uint8_t can_tx_head = 0;

@@ -39,6 +39,7 @@ extern "C"
   extern volatile float g_beta;           /* 遗忘因子 0~1，推荐0.98 */
   extern volatile float g_lambda;         /* 岭正则，推荐 1e-7~1e-6 */
   extern volatile float g_smoothFcHz;     /* 参数输出平滑截止(Hz)，推荐2~5 */
+  extern volatile float g_outputFcHz10k;  /* 10kHz parameter output low-pass cutoff (Hz) */
   extern volatile uint16_t g_binSamples;  /* 一个bin包含多少个10k采样点，默认20 -> 2ms */
   extern volatile uint16_t g_edgeSamples; /* 起止均值点数(<=binSamples)，默认5 */
   extern volatile uint16_t g_solveDecim;  /* 每多少个bin求解一次，默认5 -> 10ms */
@@ -54,9 +55,11 @@ extern "C"
   extern volatile float g_steadyDiqTh;      /* A, |iq_end-iq_start| threshold */
 
   /* MTPA 配置 */
+  extern volatile float gamma_deg;
   extern volatile float g_gammaMin;        /* rad，默认1e-3 */
   extern volatile float g_gammaMax;        /* rad，默认pi/2-1e-3 */
   extern volatile float g_gammaStepMaxDeg; /* deg/call, <=0 means disabled */
+  extern volatile uint8_t enable_45;
 
   /* ---------------- 状态查询 ---------------- */
   typedef struct

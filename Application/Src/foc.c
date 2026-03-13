@@ -2,8 +2,8 @@
 #include "MTPA.h"
 #include "hardware_interface.h"
 #include "identification.h"
+#include "onlineMTPA.h"
 #include "position_sensor.h"
-
 
 typedef struct
 {
@@ -46,7 +46,7 @@ static inline void InvParkTransform(float_t Udaxis, float_t Uqaxis, float_t thet
 static inline void SVPWM_Generate(float Ualpha, float Ubeta, float inv_Vdc, FOC_Parameter_t* foc);
 static inline float Cal_Power(FOC_Parameter_t* foc);
 static inline float LowPassFilter_Update(LowPassFilter_t* filter, float x);
-
+static inline float sat(float x);
 // SECTION - FOC Main
 void FOC_Main(void)
 {
@@ -68,6 +68,7 @@ void FOC_Main(void)
         MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f); /* T 从 0 到 50, 共 51 点 */
       }
       Experiment_Init(&Experiment, FOC.Ts, 512, 2, 20, 2, 10, 1, 200);
+      onlineMTPA_init();
 
       break;
     }
@@ -136,9 +137,85 @@ void FOC_Main(void)
         Speed_Ramp.target = Speed_Ref;
 
         PID_Controller(RampGenerator(&Speed_Ramp), FOC.Speed, &Speed_PID);
-      }
 
-      FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
+        float id = FOC.Id;
+        float iq = FOC.Iq;
+        static volatile float Ldd_est = 0;
+        static volatile float Lqq_est = 0;
+        static volatile float Ldq_est = 0;
+        static volatile float id_modleref = 0;
+        static volatile float iq_modleref = 0;
+
+        uint8_t ok;
+
+        onlineMTPA_incL_from_i(id, iq, &Ldd_est, &Lqq_est, &Ldq_est);
+        // float32_t Is2 = FOC.Id * FOC.Id + FOC.Iq * FOC.Iq;
+        // static volatile float32_t IS_cmd = 0;
+        // SQRT(Is2, &IS_cmd);
+        float IS_cmd = Speed_PID.output;
+        onlineMTPA_mtpa_for_Is(IS_cmd, &id_modleref, &iq_modleref, &gamma_deg, &ok);
+        if (enable_45 != 0.0f)
+        {
+          FOC.Iq_ref = IS_cmd * 0.70710678f;  // cos(45°) ≈ 0.7071
+          if (IS_cmd >= 0)
+          {
+            FOC.Id_ref = IS_cmd * 0.70710678f;  //
+          }
+          else
+          {
+            FOC.Id_ref = -IS_cmd * 0.70710678f;  //
+          }
+        }
+        else
+        {
+          FOC.Iq_ref = iq_modleref;
+          FOC.Id_ref = id_modleref;
+        }
+      }
+      float we = FOC.Speed * M_2PI / 30.0f;   // 电气角速度 (rad/s)
+      static volatile float K_dabc = -15.0F;  // 这个系数需要根据实际电压和电流范围进行调整
+      float dua = sat(FOC.Ia) * K_dabc;
+      float dub = sat(FOC.Ib) * K_dabc;
+      float duc = sat(FOC.Ic) * K_dabc;
+      float theta = FOC.Theta;
+      float COS_theta = COS(theta);
+      float SIN_theta = SIN(theta);
+
+      /*float Udin = FOC.Ud_ref;
+      float Uqin = FOC.Uq_ref;
+      float theta = FOC.Theta;
+      // 1. 逆 Park 变换 (d,q -> α,β)
+
+      float Ualphain = Udin * COS_theta - Uqin * SIN_theta;
+      float Ubetain = Udin * SIN_theta + Uqin * COS_theta;
+      // 2. 逆 Clark 变换 (α,β -> a,b,c)  —— 等幅值变换
+      float Ua = Ualphain;
+      float Ub = -0.5f * Ualphain + 0.86602540378f * Ubetain;  // 0.8660254 = sqrt(3)/2
+      float Uc = -0.5f * Ualphain - 0.86602540378f * Ubetain;*/
+      float da = 1.0f - FOC.Tcm1, db = 1.0f - FOC.Tcm2, dc = 1.0f - FOC.Tcm3, Vdc = FOC.Udc;
+      static volatile float Uai = 0, Ubi = 0, Uci = 0, Udi = 0, Uqi = 0;
+      Uai = (Vdc / 3.0f) * (2.0f * da - db - dc);
+      Ubi = (Vdc / 3.0f) * (2.0f * db - da - dc);
+      Uci = (Vdc / 3.0f) * (2.0f * dc - da - db);
+
+      float Ua_in = dua + Uai;
+      float Ub_in = dub + Ubi;
+      float Uc_in = duc + Uci;
+      // 1. Clark 变换 (通用等幅值)
+      float Ualpha = (2.0f / 3.0f) * (Ua_in - 0.5f * Ub_in - 0.5f * Uc_in);
+      float Ubeta =
+          (2.0f / 3.0f) * (0.86602540378f * Ub_in - 0.86602540378f * Uc_in);  // √3/2 ≈ 0.8660254
+      // 2. Park 变换
+      Udi = Ualpha * COS_theta + Ubeta * SIN_theta;
+      Uqi = -Ualpha * SIN_theta + Ubeta * COS_theta;
+      static volatile float Rs0 =
+          0.68f;  // 用于构造 y = v - Rs0*i 的基准电阻（Ω），不在此文件内估计
+
+      onlineMTPA_step_10k(Udi, Uqi, FOC.Id, FOC.Iq, we, Rs0,
+                          0);  // Rs0=0.65Ω, flags=0
+
+      /*FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
+
       // FOC.Iq_ref = IQtest;
       // IQtest=IQtest+0.0001;
       // if(IQtest>IQtestMax) IQtest=0;
@@ -158,7 +235,7 @@ void FOC_Main(void)
             ((((0.000004986 * x - 0.0003467) * x + 0.009454) * x - 0.1289) * x + 1.286) * x -
             0.2316;  // MTPA
         // FOC.Id_ref = (((-0.00000387*x+0.000307)*x-0.00688)*x+0.303)*x+0.113; // FC-MTPA
-      }
+      }*/
 
       //  float Iq_meas = FOC.Iq_ref; // 从传感器或速度环估计得到的 Iq 目标
       //  float Id_mtpa;
@@ -504,7 +581,12 @@ static inline void InvParkTransform(float_t Ud, float_t Uq, float_t theta, InvPa
   out->Ualpha = Ud * cos_theta - Uq * sin_theta;
   out->Ubeta = Ud * sin_theta + Uq * cos_theta;
 }
-
+static inline float sat(float x)
+{
+  if (x > 0.2F) return 1.0F;
+  if (x < -0.2F) return -1.0F;
+  return 5 * x;
+}
 static inline float Get_Theta(float Freq, float Theta)
 {
   // 电角度递推：θ += ω·Ts，ω = 2π·f

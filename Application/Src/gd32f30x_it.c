@@ -35,10 +35,11 @@ OF SUCH DAMAGE.
 #include "gd32f30x_it.h"
 #include "can.h"
 #include "foc.h"
-#include "hardware_interface.h"
 #include "gd32f30x.h"
-#include "systick.h"
+#include "hardware_interface.h"
 #include "justfloat.h"
+#include "onlineMTPA.h"
+#include "systick.h"
 
 extern volatile uint16_t STOP;
 float Id_max = 0.0F;
@@ -108,7 +109,6 @@ void UsageFault_Handler(void)
   }
 }
 
-
 /*!
     \brief      this function handles DebugMon exception
     \param[in]  none
@@ -116,7 +116,6 @@ void UsageFault_Handler(void)
     \retval     none
 */
 void DebugMon_Handler(void) {}
-
 
 /*!
     \brief      this function handles SysTick exception
@@ -132,11 +131,11 @@ void SysTick_Handler(void)
 
 void DMA0_Channel3_IRQHandler(void)
 {
-    if (dma_interrupt_flag_get(DMA0, DMA_CH3, DMA_INT_FLAG_FTF))
-    {
-        dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_FTF);
-        Peripheral_SCISendCallback();
-    }
+  if (dma_interrupt_flag_get(DMA0, DMA_CH3, DMA_INT_FLAG_FTF))
+  {
+    dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_FTF);
+    Peripheral_SCISendCallback();
+  }
 }
 
 void USBD_LP_CAN0_RX0_IRQHandler(void)
@@ -145,13 +144,13 @@ void USBD_LP_CAN0_RX0_IRQHandler(void)
   can_message_receive(CAN0, CAN_FIFO0, &rx_msg);
   CAN_Buffer_Put(&rx_msg);
 }
-uint32_t systick_cnt=0;
-float IQtest=0;
-float IQtestMax=20.5F;
-uint32_t systick_cnt1=0;
+uint32_t systick_cnt = 0;
+float IQtest = 0;
+float IQtestMax = 20.5F;
+uint32_t systick_cnt1 = 0;
 void ADC0_1_IRQHandler(void)
 {
-   uint32_t cnt_start = (TIMER_CNT(TIMER1));
+  uint32_t cnt_start = (TIMER_CNT(TIMER1));
   if (adc_interrupt_flag_get(ADC0, ADC_INT_FLAG_EOIC))
   {
     adc_interrupt_flag_clear(ADC0, ADC_INT_FLAG_EOIC);
@@ -160,8 +159,6 @@ void ADC0_1_IRQHandler(void)
     Peripheral_GateState();
     Peripheral_UpdateUdc();
     Peripheral_UpdatePosition();
-
-    
 
     switch (FOC.Mode)
     {
@@ -175,7 +172,7 @@ void ADC0_1_IRQHandler(void)
           Peripheral_EnableHardwareProtect();
         }
         Protect.Flag = No_Protect;
-        
+
         break;
       }
       case IDLE:
@@ -212,25 +209,34 @@ void ADC0_1_IRQHandler(void)
     }
 
     FOC_Main();
-    float DMA_Buffer[6];
-        DMA_Buffer[0] = FOC.Ia;
-        DMA_Buffer[1] = FOC.Speed;
-        DMA_Buffer[2] = FOC.Uq_ref;
-        DMA_Buffer[3] = FOC.Id;
-        DMA_Buffer[4] = FOC.Iq;
-        DMA_Buffer[5] = FOC.Ud_ref;
-        justfloat(DMA_Buffer, 6);
+    float DMA_Buffer[10];
+    DMA_Buffer[0] = FOC.Ia;
+    DMA_Buffer[1] = gamma_deg;
+    //DMA_Buffer[1] = FOC.Speed;
+    // DMA_Buffer[2] = FOC.Uq_ref;
+    // DMA_Buffer[3] = FOC.Id;
+    // DMA_Buffer[4] = FOC.Iq;
+    // DMA_Buffer[5] = FOC.Ud_ref;
+    DMA_Buffer[2] = g_ld;
+    DMA_Buffer[3] = g_lq;
+    DMA_Buffer[4] = g_ldd;
+    DMA_Buffer[5] = g_lqq;
+    DMA_Buffer[6] = g_lc;
+    DMA_Buffer[7] = FOC.Id;
+    DMA_Buffer[8] = FOC.Iq;
+    DMA_Buffer[9] = FOC.Speed;
+    justfloat(DMA_Buffer, 10);
 
     Peripheral_SetPWMChangePoint();
   }
   uint32_t cnt_end = (TIMER_CNT(TIMER1));
-   
-  if (cnt_end > cnt_start) 
+
+  if (cnt_end > cnt_start)
   {
-    systick_cnt1=cnt_end - cnt_start;
-    if(systick_cnt1>systick_cnt)
+    systick_cnt1 = cnt_end - cnt_start;
+    if (systick_cnt1 > systick_cnt)
     {
-      systick_cnt=systick_cnt1;
+      systick_cnt = systick_cnt1;
     }
   }
 }
@@ -255,7 +261,7 @@ void TIMER0_BRK_IRQHandler(void)
     // 清除 Break 中断标志
     timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_BRK);
     STOP = 1;
-    if (Software_BRK == false)
+    if (Software_BRK == true)
     {
       Protect.Flag |= Hardware_Fault;
       timer_interrupt_disable(TIMER0, TIMER_INT_BRK);  // 禁用BRK中断

@@ -172,11 +172,12 @@ void FOC_Main(void)
           FOC.Id_ref = id_modleref;
         }
       }
-      float we = FOC.Speed * M_2PI / 30.0f;   // 电气角速度 (rad/s)
-      static volatile float K_dabc = -15.0F;  // 这个系数需要根据实际电压和电流范围进行调整
-      float dua = sat(FOC.Ia) * K_dabc;
-      float dub = sat(FOC.Ib) * K_dabc;
-      float duc = sat(FOC.Ic) * K_dabc;
+      float we = FOC.Speed * M_2PI / 30.0f;  // 电气角速度 (rad/s)
+      float ia = FOC.Ia, ib = FOC.Ib, ic = FOC.Ic;
+      static volatile float K_dabc = 10.454F;  // 这个系数需要根据实际电压和电流范围进行调整
+      float dua = 0.13635 * ia + sat(ia / 0.816936) * K_dabc;
+      float dub = 0.13635 * ib + sat(ib / 0.816936) * K_dabc;
+      float duc = 0.13635 * ic + sat(ic / 0.816936) * K_dabc;
       float theta = FOC.Theta;
       float COS_theta = COS(theta);
       float SIN_theta = SIN(theta);
@@ -198,9 +199,9 @@ void FOC_Main(void)
       Ubi = (Vdc / 3.0f) * (2.0f * db - da - dc);
       Uci = (Vdc / 3.0f) * (2.0f * dc - da - db);
 
-      float Ua_in = dua + Uai;
-      float Ub_in = dub + Ubi;
-      float Uc_in = duc + Uci;
+      float Ua_in = - dua + Uai;
+      float Ub_in = - dub + Ubi;
+      float Uc_in = - duc + Uci;
       // 1. Clark 变换 (通用等幅值)
       float Ualpha = (2.0f / 3.0f) * (Ua_in - 0.5f * Ub_in - 0.5f * Uc_in);
       float Ubeta =
@@ -209,7 +210,7 @@ void FOC_Main(void)
       Udi = Ualpha * COS_theta + Ubeta * SIN_theta;
       Uqi = -Ualpha * SIN_theta + Ubeta * COS_theta;
       static volatile float Rs0 =
-          0.68f;  // 用于构造 y = v - Rs0*i 的基准电阻（Ω），不在此文件内估计
+          0.65f;  // 用于构造 y = v - Rs0*i 的基准电阻（Ω），不在此文件内估计
 
       onlineMTPA_step_10k(Udi, Uqi, FOC.Id, FOC.Iq, we, Rs0,
                           0);  // Rs0=0.65Ω, flags=0
@@ -583,9 +584,9 @@ static inline void InvParkTransform(float_t Ud, float_t Uq, float_t theta, InvPa
 }
 static inline float sat(float x)
 {
-  if (x > 0.2F) return 1.0F;
-  if (x < -0.2F) return -1.0F;
-  return 5 * x;
+  if (x > 1.0F) return 1.0F;
+  if (x < -1.0F) return -1.0F;
+  return x;
 }
 static inline float Get_Theta(float Freq, float Theta)
 {

@@ -255,7 +255,7 @@ void TIMER0_BRK_IRQHandler(void)
     // 清除 Break 中断标志
     timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_BRK);
     STOP = 1;
-    if (Software_BRK == false)
+    if (Software_BRK == true)
     {
       Protect.Flag |= Hardware_Fault;
       timer_interrupt_disable(TIMER0, TIMER_INT_BRK);  // 禁用BRK中断

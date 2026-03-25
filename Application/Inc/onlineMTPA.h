@@ -27,6 +27,11 @@ extern "C"
 #define ONLINE_MTPA_FLAG_VSAT (0x01u)  /* 电压饱和/过调制，建议冻结辨识 */
 #define ONLINE_MTPA_FLAG_BAD_V (0x02u) /* 电压不可信（例如未用实际施加电压） */
 
+/* dT/dtheta 冻结判据选择 */
+#define ONLINE_MTPA_TORQUE_GRAD_FREEZE_OFF (0x00u)
+#define ONLINE_MTPA_TORQUE_GRAD_FREEZE_DT (0x01u)
+#define ONLINE_MTPA_TORQUE_GRAD_FREEZE_DT_OVER_T (0x02u)
+
   /* ---------------- 参数与配置（上位机可写） ---------------- */
   /* 识别得到的模型参数（单位见注释） */
   extern volatile float g_ld;  /* H */
@@ -51,8 +56,23 @@ extern "C"
   extern volatile float g_identWeMin;     /* rad/s，电角速度门限，小于冻结 */
   extern volatile uint8_t g_freezeOnVsat; /* 1:电压饱和冻结 */
   extern volatile uint8_t g_freezeOnSteady; /* 1: freeze identification when a bin is near steady state */
-  extern volatile float g_steadyDidTh;      /* A, |id_end-id_start| threshold */
-  extern volatile float g_steadyDiqTh;      /* A, |iq_end-iq_start| threshold */
+  extern volatile float g_steadyDidTh;               /* A, |id_end-id_start| threshold */
+  extern volatile float g_steadyDiqTh;               /* A, |iq_end-iq_start| threshold */
+  extern volatile uint8_t g_torqueGradFreezeSel;     /* 0:关 1:|dT/dtheta| 2:|dT/dtheta/T| */
+  extern volatile uint8_t Sel12;                     /* 计数到阈值后，将 g_torqueGradFreezeSel 置为 Sel12(1或2) */
+  extern volatile uint32_t g_torqueGradFreezeSelDelayCnt; /* 启动辨识后，切换到 Sel12 的10k计数阈值 */
+  extern volatile float g_torqueGradTh;              /* 转矩偏导阈值 */
+  extern volatile float g_torqueGradNormTh;          /* 归一化转矩偏导阈值 */
+  extern volatile float g_torqueGradFiltFcHz;        /* 转矩偏导滤波截止频率(Hz) */
+  extern volatile float g_torqueGradRestartDeltaIs;  /* A，重启辨识电流增量阈值 */
+  extern volatile uint8_t g_identFrozenByTorqueGrad; /* 1: 因转矩偏导被冻结 */
+  extern volatile uint8_t g_identifying;             /* 1: 当前周期正在辨识采集 */
+  extern volatile float g_mtpaThetaRad;              /* MTPA 输出电流角(rad) */
+  extern volatile int8_t g_mtpaIqSign;               /* MTPA 输出 iq 符号(+1/-1) */
+  extern volatile float g_torqueProxyNow;            /* 当前角度下转矩代理值 */
+  extern volatile float g_torqueGradRawNow;          /* 当前角度下 dT/dtheta 原始值 */
+  extern volatile float g_torqueGradFiltNow;         /* 滤波后的 dT/dtheta */
+  extern volatile float g_torqueGradNormNow;         /* |dT/dtheta|/|T| */
 
   /* MTPA 配置 */
   extern volatile float gamma_deg;
@@ -93,6 +113,10 @@ extern "C"
 
   /* 转矩代理（不含 3/2*p 系数），用于比较/选择候选点 */
   float onlineMTPA_torque_proxy(float id, float iq);
+
+  /* 基于当前辨识模型参数，在固定 Is 下按电流角直接解析计算 T 与 dT/dtheta */
+  void onlineMTPA_torque_grad_from_theta(float Is, float theta_rad, int8_t iq_sign, float* Tproxy,
+                                         float* dTdTheta);
 
   /* 固定电流幅值 Is 的 MTPA 求解（解析+候选点筛选）
    * Is_cmd: 电流幅值指令（A），允许带符号：Is_cmd<0 -> 输出iq_ref<0

@@ -18,7 +18,7 @@ Protect_Parameter_t Protect = {.Udc_rate = Voltage_Rate,
                                .Flag = No_Protect};
 
 static volatile bool usart_dma_busy = false;
-
+volatile float Breke_Duty = 1.0F;
 static inline void CurrentProtect(float Ia, float Ib, float Ic, float I_Max);
 static inline void VoltageProtect(float Udc, float Udc_rate, float Udc_fluctuation);
 static inline bool can_receive_to_frame(const can_receive_message_struct* hw_msg,
@@ -132,8 +132,27 @@ void Peripheral_SetPWMChangePoint(void)
   float Tcm1 = 0.0F;
   float Tcm2 = 0.0F;
   float Tcm3 = 0.0F;
+  float Udc = 0.0F;
+  float inv_Udc = 0.0F;
+  ADC_Read_Regular(&Udc, &inv_Udc);
+  if (Udc < 630.0F)
+  {
+    Breke_Duty = 1.0F;
+  }
+  else
+  {
+    Breke_Duty = 1 - (Udc - 630.0F) / 80.0F;
+  }
+  if (Breke_Duty < 0.1F)
+  {
+    Breke_Duty = 0.1F;
+  }
+  if (Breke_Duty > 1.0F)
+  {
+    Breke_Duty = 1.0F;
+  }
   FOC_OutputCompare(&Tcm1, &Tcm2, &Tcm3);
-  Set_PWM_Compare(Tcm1, Tcm2, Tcm3);
+  Set_PWM_Compare(Tcm1, Tcm2, Tcm3, Breke_Duty);
 }
 
 void Peripheral_UpdateUdc(void)
@@ -185,7 +204,6 @@ void Peripheral_TemperatureProtect(void)
   if (Temperature < 0.3375 * Protect.Temperature)
   {
     gpio_bit_reset(FAN_OPEN_PORT, FAN_OPEN_PIN);
-  
   }
   if (Temperature > Protect.Temperature)
   {
@@ -253,4 +271,3 @@ static inline bool can_receive_to_frame(const can_receive_message_struct* hw_msg
 
   return true;
 }
-

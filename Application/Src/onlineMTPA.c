@@ -22,13 +22,28 @@ volatile uint16_t g_solveDecim = 1u; /* 每10ms解一次 */
 
 volatile uint8_t g_fixLdLq = 0u;
 volatile uint8_t g_identEnable = 1u;
-volatile float g_identIsMin = 3.0f;
+volatile float g_identIsMin = 2.0f;
 volatile float g_identWeMin = 5.0f; /* rad/s，低速冻结 */
 volatile uint8_t g_freezeOnVsat = 1u;
 
 volatile uint8_t g_freezeOnSteady = 1u;
 volatile float g_steadyDidTh = 0.15f;
 volatile float g_steadyDiqTh = 0.15f;
+volatile uint8_t g_torqueGradFreezeSel = ONLINE_MTPA_TORQUE_GRAD_FREEZE_OFF;
+volatile uint8_t Sel12 = 1u;
+volatile uint32_t g_torqueGradFreezeSelDelayCnt = 5000u;
+volatile float g_torqueGradTh = 0.02f;
+volatile float g_torqueGradNormTh = 0.02f;
+volatile float g_torqueGradFiltFcHz = 20.0f;
+volatile float g_torqueGradRestartDeltaIs = 0.5f;
+volatile uint8_t g_identFrozenByTorqueGrad = 0u;
+volatile uint8_t g_identifying = 0u;
+volatile float g_mtpaThetaRad = 0.0f;
+volatile int8_t g_mtpaIqSign = 1;
+volatile float g_torqueProxyNow = 0.0f;
+volatile float g_torqueGradRawNow = 0.0f;
+volatile float g_torqueGradFiltNow = 0.0f;
+volatile float g_torqueGradNormNow = 0.0f;
 
 volatile float g_gammaMin = 0.75f + 1e-3f;
 volatile float g_gammaMax = 1.5707963f - 1e-3f;
@@ -72,6 +87,13 @@ static ident_state_t st;
 static float s_param_init[5];
 static float s_gamma_prev = 0.0f;
 static uint8_t s_gamma_prev_valid = 0u;
+static uint8_t s_mtpa_theta_valid = 0u;
+static float s_torqueGradAlpha10k = 1.0f;
+static float s_torqueGradFiltState = 0.0f;
+static uint8_t s_torqueGradFiltValid = 0u;
+static float s_frozenIs = 0.0f;
+static uint32_t s_identWarmCnt = 0u;
+static uint8_t s_waitRecountByDeltaIs = 0u;
 /* ---------------- 工具函数（小计算量） ---------------- */
 static inline float clampf(float x, float a, float b)
 {
@@ -101,6 +123,15 @@ static void abort_current_bin(void)
   st.end_sum_id = 0.0f;
   st.end_sum_iq = 0.0f;
   st.end_cnt = 0u;
+}
+
+static void clear_ident_history(void)
+{
+  memset(st.S, 0, sizeof(st.S));
+  memset(st.t, 0, sizeof(st.t));
+  st.bins_acc = 0u;
+  st.solve_cnt = 0u;
+  abort_current_bin();
 }
 
 static void basis_5(float id, float iq, float phi_d[5], float phi_q[5])
@@ -153,6 +184,49 @@ static void update_output_alpha_10k(void)
   }
   float a = expf(-2.0f * 3.1415926f * fc * ONLINE_MTPA_TS_CTRL);
   st.alpha_out_10k = 1.0f - a;
+}
+
+static void update_torqueGrad_alpha_10k(void)
+{
+  float fc = g_torqueGradFiltFcHz;
+  if (fc <= 0.0f)
+  {
+    s_torqueGradAlpha10k = 1.0f;
+    return;
+  }
+  float a = expf(-2.0f * 3.1415926f * fc * ONLINE_MTPA_TS_CTRL);
+  s_torqueGradAlpha10k = 1.0f - a;
+}
+
+static void update_torqueGrad_freeze_sel_by_count(uint8_t ident_active_now)
+{
+  if (!ident_active_now)
+  {
+    /* 辨识未激活时，清计数并关闭转矩偏导冻结 */
+    s_identWarmCnt = 0u;
+    g_torqueGradFreezeSel = ONLINE_MTPA_TORQUE_GRAD_FREEZE_OFF;
+    return;
+  }
+
+  if (s_identWarmCnt < 0xFFFFFFFFu)
+  {
+    s_identWarmCnt++;
+  }
+
+  if (s_identWarmCnt > g_torqueGradFreezeSelDelayCnt)
+  {
+    uint8_t sel = Sel12;
+    if ((sel != ONLINE_MTPA_TORQUE_GRAD_FREEZE_DT) &&
+        (sel != ONLINE_MTPA_TORQUE_GRAD_FREEZE_DT_OVER_T))
+    {
+      sel = ONLINE_MTPA_TORQUE_GRAD_FREEZE_DT;
+    }
+    g_torqueGradFreezeSel = sel;
+  }
+  else
+  {
+    g_torqueGradFreezeSel = ONLINE_MTPA_TORQUE_GRAD_FREEZE_OFF;
+  }
 }
 
 static void publish_output_params(const float x[5])
@@ -279,9 +353,24 @@ void onlineMTPA_init(void)
 
   update_alpha();
   update_output_alpha_10k();
+  update_torqueGrad_alpha_10k();
   publish_output_params(st.xhat_out);
   s_gamma_prev = 0.0f;
   s_gamma_prev_valid = 0u;
+  s_mtpa_theta_valid = 0u;
+  s_torqueGradFiltState = 0.0f;
+  s_torqueGradFiltValid = 0u;
+  s_frozenIs = 0.0f;
+  s_identWarmCnt = 0u;
+  s_waitRecountByDeltaIs = 0u;
+  g_identFrozenByTorqueGrad = 0u;
+  g_identifying = 0u;
+  g_mtpaThetaRad = 0.0f;
+  g_mtpaIqSign = 1;
+  g_torqueProxyNow = 0.0f;
+  g_torqueGradRawNow = 0.0f;
+  g_torqueGradFiltNow = 0.0f;
+  g_torqueGradNormNow = 0.0f;
 }
 
 void onlineMTPA_reset_ident(void)
@@ -299,9 +388,24 @@ void onlineMTPA_reset_ident(void)
 
   update_alpha();
   update_output_alpha_10k();
+  update_torqueGrad_alpha_10k();
   publish_output_params(st.xhat_out);
   s_gamma_prev = 0.0f;
   s_gamma_prev_valid = 0u;
+  s_mtpa_theta_valid = 0u;
+  s_torqueGradFiltState = 0.0f;
+  s_torqueGradFiltValid = 0u;
+  s_frozenIs = 0.0f;
+  s_identWarmCnt = 0u;
+  s_waitRecountByDeltaIs = 0u;
+  g_identFrozenByTorqueGrad = 0u;
+  g_identifying = 0u;
+  g_mtpaThetaRad = 0.0f;
+  g_mtpaIqSign = 1;
+  g_torqueProxyNow = 0.0f;
+  g_torqueGradRawNow = 0.0f;
+  g_torqueGradFiltNow = 0.0f;
+  g_torqueGradNormNow = 0.0f;
 }
 
 onlineMTPA_status_t onlineMTPA_get_status(void)
@@ -354,12 +458,186 @@ float onlineMTPA_torque_proxy(float id, float iq)
   return psid * iq - psiq * id;
 }
 
+void onlineMTPA_torque_grad_from_theta(float Is, float theta_rad, int8_t iq_sign, float* Tproxy,
+                                       float* dTdTheta)
+{
+  float I = fabsf(Is);
+  float c = COS(theta_rad);
+  float s = SIN(theta_rad);
+  float I2 = I * I;
+  float c2 = c * c;
+  float s2 = s * s;
+  float sign = (iq_sign >= 0) ? 1.0f : -1.0f;
+
+  float A = g_ld - g_lq;
+  float B = g_ldd - g_lc;
+  float C = g_lc - g_lqq;
+
+  float g = A + B * I2 * c2 + C * I2 * s2;
+  float T = sign * I2 * c * s * g;
+  float dT = sign * I2 * ((c2 - s2) * g + 2.0f * I2 * c2 * s2 * (C - B));
+
+  if (Tproxy) *Tproxy = T;
+  if (dTdTheta) *dTdTheta = dT;
+}
+
+static void update_torque_grad_freeze(float Is, uint8_t base_gate_ok)
+{
+  uint8_t sel = g_torqueGradFreezeSel;
+
+  if (sel == ONLINE_MTPA_TORQUE_GRAD_FREEZE_OFF)
+  {
+    g_identFrozenByTorqueGrad = 0u;
+    /* 若正在等待“电流变化超阈值”后重启计数，则保留冻结电流参考 */
+    if (!s_waitRecountByDeltaIs) s_frozenIs = 0.0f;
+    s_torqueGradFiltState = 0.0f;
+    s_torqueGradFiltValid = 0u;
+    g_torqueGradRawNow = 0.0f;
+    g_torqueGradFiltNow = 0.0f;
+    g_torqueGradNormNow = 0.0f;
+    g_torqueProxyNow = 0.0f;
+    return;
+  }
+
+  if (g_identFrozenByTorqueGrad)
+  {
+    float dIs = (g_torqueGradRestartDeltaIs > 0.0f) ? g_torqueGradRestartDeltaIs : 0.0f;
+    if (Is > (s_frozenIs + dIs))
+    {
+      g_identFrozenByTorqueGrad = 0u;
+      s_frozenIs = 0.0f;
+      s_torqueGradFiltState = 0.0f;
+      s_torqueGradFiltValid = 0u;
+      abort_current_bin();
+    }
+    return;
+  }
+
+  if ((!base_gate_ok) || (!s_mtpa_theta_valid) || (Is <= 1e-6f))
+  {
+    return;
+  }
+
+  float T = 0.0f;
+  float dT = 0.0f;
+  float dT_prev = s_torqueGradFiltState;
+  uint8_t dT_prev_valid = s_torqueGradFiltValid;
+  onlineMTPA_torque_grad_from_theta(Is, g_mtpaThetaRad, g_mtpaIqSign, &T, &dT);
+  g_torqueProxyNow = T;
+  g_torqueGradRawNow = dT;
+
+  if (!s_torqueGradFiltValid)
+  {
+    s_torqueGradFiltState = dT;
+    s_torqueGradFiltValid = 1u;
+  }
+  else
+  {
+    float a = clampf(s_torqueGradAlpha10k, 0.0f, 1.0f);
+    s_torqueGradFiltState += a * (dT - s_torqueGradFiltState);
+  }
+  g_torqueGradFiltNow = s_torqueGradFiltState;
+  g_torqueGradNormNow = fabsf(s_torqueGradFiltState) / fmaxf(fabsf(T), 1e-6f);
+
+  float metric = 0.0f;
+  float th = 0.0f;
+  if (sel == ONLINE_MTPA_TORQUE_GRAD_FREEZE_DT_OVER_T)
+  {
+    metric = g_torqueGradNormNow;
+    th = g_torqueGradNormTh;
+  }
+  else
+  {
+    metric = fabsf(s_torqueGradFiltState);
+    th = g_torqueGradTh;
+  }
+
+  if ((!dT_prev_valid) || (th <= 0.0f))
+  {
+    return;
+  }
+
+  /* 冻结只允许“负偏导变大并首次进入冻结区间”触发；
+     正值进入阈值区或负值继续变小都不触发 */
+  uint8_t freeze_hit = 0u;
+  if (sel == ONLINE_MTPA_TORQUE_GRAD_FREEZE_DT)
+  {
+    uint8_t in_zone_prev = (dT_prev >= -th) && (dT_prev <= th);
+    uint8_t in_zone_now = (s_torqueGradFiltState >= -th) && (s_torqueGradFiltState <= th);
+    if ((!in_zone_prev) && in_zone_now && (dT_prev < 0.0f) && (s_torqueGradFiltState > dT_prev))
+    {
+      freeze_hit = 1u;
+    }
+  }
+  else
+  {
+    float prev_metric = fabsf(dT_prev) / fmaxf(fabsf(T), 1e-6f);
+    uint8_t enter_zone = (prev_metric >= th) && (metric < th);
+    if (enter_zone && (dT_prev < 0.0f) && (s_torqueGradFiltState > dT_prev))
+    {
+      freeze_hit = 1u;
+    }
+  }
+
+  if (freeze_hit)
+  {
+    g_identFrozenByTorqueGrad = 1u;
+    s_frozenIs = Is;
+    s_waitRecountByDeltaIs = 1u;
+    s_torqueGradFiltState = 0.0f;
+    s_torqueGradFiltValid = 0u;
+    clear_ident_history();
+  }
+}
+
 /* 10kHz 辨识 step */
 void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float Rs0, uint8_t flags)
 {
   float Is2 = id * id + iq * iq;
+  float Is = sqrtf(Is2);
+  uint8_t base_gate_ok = 1u;
+
   output_filter_step_10k(Is2);
+  update_torqueGrad_alpha_10k();
+  g_identifying = 0u;
+
+  if (Is < g_identIsMin) base_gate_ok = 0u;
+  if (fabsf(we) < g_identWeMin) base_gate_ok = 0u;
+  if (g_freezeOnVsat && (flags & ONLINE_MTPA_FLAG_VSAT)) base_gate_ok = 0u;
+  if (flags & ONLINE_MTPA_FLAG_BAD_V) base_gate_ok = 0u;
+
+  update_torque_grad_freeze(Is, base_gate_ok);
+
+  /* 冻结后不立即重计数，需等待电流相对冻结点变化超过阈值 */
+  if (s_waitRecountByDeltaIs)
+  {
+    float dIs = (g_torqueGradRestartDeltaIs > 0.0f) ? g_torqueGradRestartDeltaIs : 0.0f;
+    if (fabsf(Is - s_frozenIs) > dIs)
+    {
+      s_waitRecountByDeltaIs = 0u;
+      abort_current_bin();
+    }
+  }
+
+  /* 解除冻结后，且满足辨识门控时开始计数；
+     计满前保持 g_torqueGradFreezeSel=0，计满后置为 Sel12 */
+  uint8_t ident_active_now =
+      (g_identEnable && base_gate_ok && (!g_identFrozenByTorqueGrad) && (!s_waitRecountByDeltaIs))
+          ? 1u
+          : 0u;
+  update_torqueGrad_freeze_sel_by_count(ident_active_now);
+
   if (!g_identEnable)
+  {
+    abort_current_bin();
+    return;
+  }
+  if (s_waitRecountByDeltaIs)
+  {
+    abort_current_bin();
+    return;
+  }
+  if (g_identFrozenByTorqueGrad)
   {
     abort_current_bin();
     return;
@@ -374,7 +652,6 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   if (edgeN > M) edgeN = M;
 
   /* 门控：低速/小电流/电压饱和冻结（直接不更新这一bin） */
-  float Is = sqrtf(Is2);
   if (Is < g_identIsMin)
   {
     abort_current_bin();
@@ -397,6 +674,8 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   }
 
   /* bin开始：清零累计 */
+  g_identifying = 1u;
+
   if (st.cnt == 0u)
   {
     st.sum_bd = 0.0f;
@@ -462,6 +741,7 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
     float diq = fabsf(iq_end - iq_start);
     if ((did < g_steadyDidTh) && (diq < g_steadyDiqTh))
     {
+      g_identifying = 0u;
       abort_current_bin();
       return;
     }
@@ -631,6 +911,9 @@ void onlineMTPA_mtpa_for_Is(float Is_cmd, float* id_ref, float* iq_ref, float* g
     if (gamma_deg) *gamma_deg = 45.0f;
     if (ok) *ok = 1u;
     s_gamma_prev_valid = 0u;
+    s_mtpa_theta_valid = 0u;
+    g_mtpaThetaRad = 0.0f;
+    g_mtpaIqSign = 1;
     return;
   }
 
@@ -702,6 +985,9 @@ void onlineMTPA_mtpa_for_Is(float Is_cmd, float* id_ref, float* iq_ref, float* g
   }
   s_gamma_prev = gamma;
   s_gamma_prev_valid = 1u;
+  s_mtpa_theta_valid = 1u;
+  g_mtpaThetaRad = gamma;
+  g_mtpaIqSign = (sgn >= 0) ? 1 : -1;
 
   float idr = I * COS(gamma);
   float iqr = (float)sgn * I * SIN(gamma);

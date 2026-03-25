@@ -209,14 +209,14 @@ void ADC0_1_IRQHandler(void)
     }
 
     FOC_Main();
-    float DMA_Buffer[10];
+    float DMA_Buffer[13];
     DMA_Buffer[0] = FOC.Ia;
     DMA_Buffer[1] = gamma_deg;
-    //DMA_Buffer[1] = FOC.Speed;
-    // DMA_Buffer[2] = FOC.Uq_ref;
-    // DMA_Buffer[3] = FOC.Id;
-    // DMA_Buffer[4] = FOC.Iq;
-    // DMA_Buffer[5] = FOC.Ud_ref;
+    // DMA_Buffer[1] = FOC.Speed;
+    //  DMA_Buffer[2] = FOC.Uq_ref;
+    //  DMA_Buffer[3] = FOC.Id;
+    //  DMA_Buffer[4] = FOC.Iq;
+    //  DMA_Buffer[5] = FOC.Ud_ref;
     DMA_Buffer[2] = g_ld;
     DMA_Buffer[3] = g_lq;
     DMA_Buffer[4] = g_ldd;
@@ -225,7 +225,10 @@ void ADC0_1_IRQHandler(void)
     DMA_Buffer[7] = FOC.Id;
     DMA_Buffer[8] = FOC.Iq;
     DMA_Buffer[9] = FOC.Speed;
-    justfloat(DMA_Buffer, 10);
+    DMA_Buffer[10] = g_torqueGradRawNow;
+    DMA_Buffer[11] = g_torqueGradFiltNow;
+    DMA_Buffer[12] = g_torqueGradNormNow;
+    justfloat(DMA_Buffer, 13);
 
     Peripheral_SetPWMChangePoint();
   }

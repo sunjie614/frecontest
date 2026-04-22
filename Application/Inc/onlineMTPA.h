@@ -1,4 +1,4 @@
-
+﻿
 
 #ifndef ONLINE_MTPA_H
 #define ONLINE_MTPA_H
@@ -55,12 +55,14 @@ extern "C"
   extern volatile float g_identIsMin;     /* A，电流幅值门限，小于冻结 */
   extern volatile float g_identWeMin;     /* rad/s，电角速度门限，小于冻结 */
   extern volatile uint8_t g_freezeOnVsat; /* 1:电压饱和冻结 */
-  extern volatile uint8_t g_freezeOnSteady; /* 1: freeze identification when a bin is near steady state */
-  extern volatile float g_steadyDidTh;               /* A, |id_end-id_start| threshold */
-  extern volatile float g_steadyDiqTh;               /* A, |iq_end-iq_start| threshold */
-  extern volatile uint8_t g_torqueGradFreezeSel;     /* 0:关 1:|dT/dtheta| 2:|dT/dtheta/T| */
-  extern volatile uint8_t Sel12;                     /* 计数到阈值后，将 g_torqueGradFreezeSel 置为 Sel12(1或2) */
-  extern volatile uint32_t g_torqueGradFreezeSelDelayCnt; /* 启动辨识后，切换到 Sel12 的10k计数阈值 */
+  extern volatile uint8_t
+      g_freezeOnSteady; /* 1: freeze identification when a bin is near steady state */
+  extern volatile float g_steadyDidTh;           /* A, |id_end-id_start| threshold */
+  extern volatile float g_steadyDiqTh;           /* A, |iq_end-iq_start| threshold */
+  extern volatile uint8_t g_torqueGradFreezeSel; /* 0:关 1:|dT/dtheta| 2:|dT/dtheta/T| */
+  extern volatile uint8_t Sel12; /* 计数到阈值后，将 g_torqueGradFreezeSel 置为 Sel12(1或2) */
+  extern volatile uint32_t
+      g_torqueGradFreezeSelDelayCnt;                 /* 启动辨识后，切换到 Sel12 的10k计数阈值 */
   extern volatile float g_torqueGradTh;              /* 转矩偏导阈值 */
   extern volatile float g_torqueGradNormTh;          /* 归一化转矩偏导阈值 */
   extern volatile float g_torqueGradFiltFcHz;        /* 转矩偏导滤波截止频率(Hz) */
@@ -73,13 +75,47 @@ extern "C"
   extern volatile float g_torqueGradRawNow;          /* 当前角度下 dT/dtheta 原始值 */
   extern volatile float g_torqueGradFiltNow;         /* 滤波后的 dT/dtheta */
   extern volatile float g_torqueGradNormNow;         /* |dT/dtheta|/|T| */
+  extern volatile float g_mtpaKNow;                  /* 当前MTPA解析式 K */
+  extern volatile float g_mtpaMNow;                  /* 当前MTPA解析式 M */
+
+  /* 可信度观测参数（仅用于观测/记录，不参与控制） */
+  extern volatile float g_sigma_r;     /* 残差可信度尺度参数 */
+  extern volatile float g_kappa1;      /* 数值可信度分段阈值下限 */
+  extern volatile float g_kappa2;      /* 数值可信度分段阈值上限 */
+  extern volatile float g_Lmin_cfd;    /* 物理可行性判据 L 最小阈值 */
+  extern volatile float g_detLmin_cfd; /* 物理可行性判据 det(L) 最小阈值 */
 
   /* MTPA 配置 */
+  extern volatile uint8_t g_enable_cfd_limit;
+  extern volatile float g_C_hi;
+  extern volatile float g_C_lo;
   extern volatile float gamma_deg;
   extern volatile float g_gammaMin;        /* rad，默认1e-3 */
   extern volatile float g_gammaMax;        /* rad，默认pi/2-1e-3 */
   extern volatile float g_gammaStepMaxDeg; /* deg/call, <=0 means disabled */
   extern volatile uint8_t enable_45;
+
+  typedef struct
+  {
+    float Cr;
+    float Cn;
+    float Cp;
+
+    float Jr;
+    float kappaApprox;
+
+    float Ldh_now;
+    float Lqh_now;
+    float Ldqh_now;
+    float detL_now;
+
+    /* 观测用：当前模型参数 */
+    float ld_now;
+    float ldd_now;
+    float lq_now;
+    float lqq_now;
+    float lc_now;
+  } onlineMTPA_conf_t;
 
   /* ---------------- 状态查询 ---------------- */
   typedef struct
@@ -104,6 +140,9 @@ extern "C"
 
   /* 查询状态 */
   onlineMTPA_status_t onlineMTPA_get_status(void);
+
+  /* 查询可信度观测量（仅观测，不参与控制） */
+  onlineMTPA_conf_t onlineMTPA_get_confidence(void);
 
   /* 用当前参数计算磁链（psi(i) 模型） */
   void onlineMTPA_flux_from_i(float id, float iq, float* psid, float* psiq);

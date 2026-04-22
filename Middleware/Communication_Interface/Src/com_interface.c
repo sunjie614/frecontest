@@ -5,18 +5,16 @@
 #define CAN_TX_BUFFER_SIZE 8
 
 #define SCI_TX_BUFFER_SIZE 8
-#define MAX_FLOATS_PER_FRAME 16
+#define MAX_FLOATS_PER_FRAME 17
 
 static can_frame_t can_tx_buffer[CAN_TX_BUFFER_SIZE];
 static volatile uint8_t can_tx_head = 0;
 static volatile uint8_t can_tx_tail = 0;
 
 static float sci_tx_buffer[SCI_TX_BUFFER_SIZE][MAX_FLOATS_PER_FRAME];
-static uint8_t sci_tx_lengths[SCI_TX_BUFFER_SIZE]; // 每帧浮点数量
+static uint8_t sci_tx_lengths[SCI_TX_BUFFER_SIZE];  // 每帧浮点数量
 static volatile uint8_t sci_tx_head = 0;
 static volatile uint8_t sci_tx_tail = 0;
-
-
 
 bool Com_ReadCANFrame(can_frame_t* out_frame)
 {
@@ -58,11 +56,14 @@ bool Com_CANSendProcess(void)
     }
 
     // 发送完后，将 head 往“旧的方向”移动
-    if (can_tx_head == 0) {
+    if (can_tx_head == 0)
+    {
       can_tx_head = CAN_TX_BUFFER_SIZE - 1;
-    } else {
+    }
+    else
+    {
       can_tx_head--;
-}
+    }
 
     return true;
   }
@@ -72,27 +73,31 @@ bool Com_CANSendProcess(void)
 
 bool Com_SCISendEnqueue(float* data, uint8_t float_count)
 {
-    uint8_t next_head = (sci_tx_head + 1) % SCI_TX_BUFFER_SIZE;
-    if (next_head == sci_tx_tail) {
-        return false; // 缓冲区满
-    }
+  if ((!data) || (float_count == 0u) || (float_count > MAX_FLOATS_PER_FRAME))
+  {
+    return false;  // 防止越界写入发送缓冲
+  }
 
-    memcpy(sci_tx_buffer[sci_tx_head], data, float_count * sizeof(float));
-    sci_tx_lengths[sci_tx_head] = float_count;
-    sci_tx_head = next_head;
-    return true;
+  uint8_t next_head = (sci_tx_head + 1) % SCI_TX_BUFFER_SIZE;
+  if (next_head == sci_tx_tail)
+  {
+    return false;  // 缓冲区满
+  }
+
+  memcpy(sci_tx_buffer[sci_tx_head], data, float_count * sizeof(float));
+  sci_tx_lengths[sci_tx_head] = float_count;
+  sci_tx_head = next_head;
+  return true;
 }
 
 bool Com_SCISendProcess(void)
 {
-    if (sci_tx_tail == sci_tx_head) return false;
+  if (sci_tx_tail == sci_tx_head) return false;
 
-    float* data = sci_tx_buffer[sci_tx_tail];
-    uint8_t count = sci_tx_lengths[sci_tx_tail];
+  float* data = sci_tx_buffer[sci_tx_tail];
+  uint8_t count = sci_tx_lengths[sci_tx_tail];
 
-    Peripheral_SCISend(data, count);
-    sci_tx_tail = (sci_tx_tail + 1) % SCI_TX_BUFFER_SIZE;
-    return true;
+  Peripheral_SCISend(data, count);
+  sci_tx_tail = (sci_tx_tail + 1) % SCI_TX_BUFFER_SIZE;
+  return true;
 }
-
-

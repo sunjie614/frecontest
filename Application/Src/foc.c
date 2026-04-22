@@ -32,6 +32,12 @@ float theta_factor = 0.0F;  // Sensor data to mechanic angle conversion factor
 
 float Speed_Ref = 0.0F;
 FluxExperiment_t Experiment = {0};
+/* 在线辨识支路滤波观测量（仅观测/传输，不参与控制） */
+volatile float g_identInputLpfFcHz = 800.0f;
+volatile float g_identUdFilt = 0.0f;
+volatile float g_identUqFilt = 0.0f;
+volatile float g_identIdFilt = 0.0f;
+volatile float g_identIqFilt = 0.0f;
 
 static inline float Get_Theta(float Freq, float Theta);
 static inline void Parameter_Init(void);
@@ -199,9 +205,9 @@ void FOC_Main(void)
       Ubi = (Vdc / 3.0f) * (2.0f * db - da - dc);
       Uci = (Vdc / 3.0f) * (2.0f * dc - da - db);
 
-      float Ua_in = - dua + Uai;
-      float Ub_in = - dub + Ubi;
-      float Uc_in = - duc + Uci;
+      float Ua_in = -dua + Uai;
+      float Ub_in = -dub + Ubi;
+      float Uc_in = -duc + Uci;
       // 1. Clark 变换 (通用等幅值)
       float Ualpha = (2.0f / 3.0f) * (Ua_in - 0.5f * Ub_in - 0.5f * Uc_in);
       float Ubeta =
@@ -212,7 +218,60 @@ void FOC_Main(void)
       static volatile float Rs0 =
           0.65f;  // 用于构造 y = v - Rs0*i 的基准电阻（Ω），不在此文件内估计
 
-      onlineMTPA_step_10k(Udi, Uqi, FOC.Id, FOC.Iq, we, Rs0,
+      /* 仅对在线辨识输入做一阶低通，不影响控制环其它路径 */
+      static LowPassFilter_t Ud_ident_lpf = {.a = 0.0f, .y_last = 0.0f};
+      static LowPassFilter_t Uq_ident_lpf = {.a = 0.0f, .y_last = 0.0f};
+      static LowPassFilter_t Id_ident_lpf = {.a = 0.0f, .y_last = 0.0f};
+      static LowPassFilter_t Iq_ident_lpf = {.a = 0.0f, .y_last = 0.0f};
+      static uint8_t ident_lpf_inited = 0u;
+
+      float Udi_ident = Udi;
+      float Uqi_ident = Uqi;
+      float Id_ident = FOC.Id;
+      float Iq_ident = FOC.Iq;
+
+      float fc_ident = g_identInputLpfFcHz;
+      if (fc_ident > 0.0f)
+      {
+        /* 一阶离散低通：y = a*y(k-1) + (1-a)*x，a=1/(1+2*pi*fc*Ts) */
+        float Ts_ident = (FOC.Ts > 0.0f) ? FOC.Ts : T_10kHz;
+        float k = 2.0f * 3.1415926f * fc_ident * Ts_ident;
+        float a = 1.0f / (1.0f + k);
+
+        if (a < 0.0f) a = 0.0f;
+        if (a > 1.0f) a = 1.0f;
+
+        Ud_ident_lpf.a = a;
+        Uq_ident_lpf.a = a;
+        Id_ident_lpf.a = a;
+        Iq_ident_lpf.a = a;
+
+        if (!ident_lpf_inited)
+        {
+          Ud_ident_lpf.y_last = Udi_ident;
+          Uq_ident_lpf.y_last = Uqi_ident;
+          Id_ident_lpf.y_last = Id_ident;
+          Iq_ident_lpf.y_last = Iq_ident;
+          ident_lpf_inited = 1u;
+        }
+
+        Udi_ident = LowPassFilter_Update(&Ud_ident_lpf, Udi_ident);
+        Uqi_ident = LowPassFilter_Update(&Uq_ident_lpf, Uqi_ident);
+        Id_ident = LowPassFilter_Update(&Id_ident_lpf, Id_ident);
+        Iq_ident = LowPassFilter_Update(&Iq_ident_lpf, Iq_ident);
+      }
+      else
+      {
+        ident_lpf_inited = 0u;
+      }
+
+      /* 输出滤波后的辨识输入供上位机观测 */
+      g_identUdFilt = Udi_ident;
+      g_identUqFilt = Uqi_ident;
+      g_identIdFilt = Id_ident;
+      g_identIqFilt = Iq_ident;
+
+      onlineMTPA_step_10k(Udi_ident, Uqi_ident, Id_ident, Iq_ident, we, Rs0,
                           0);  // Rs0=0.65Ω, flags=0
 
       /*FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
@@ -365,8 +424,8 @@ void Parameter_Init(void)
 #ifdef Encoder_Position
   theta_factor = M_2PI / (float)(Motor.Position_Scale + 1);
 #endif
-  Speed_PID.Kp = 0.019F;
-  Speed_PID.Ki = 0.06F;
+  Speed_PID.Kp = 0.023F;
+  Speed_PID.Ki = 0.08F;
   Speed_PID.Kd = 0.0F;
   Speed_PID.MaxOutput = 0.7F * FOC.I_Max;  // Maximum Iq
   Speed_PID.MinOutput = -0.7F * FOC.I_Max;

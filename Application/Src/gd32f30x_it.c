@@ -209,7 +209,12 @@ void ADC0_1_IRQHandler(void)
     }
 
     FOC_Main();
-    float DMA_Buffer[13];
+    onlineMTPA_conf_t conf = onlineMTPA_get_confidence();
+    float psid_model = 0.0f;
+    float psiq_model = 0.0f;
+    onlineMTPA_flux_from_i(FOC.Id, FOC.Iq, &psid_model, &psiq_model);
+    float DMA_Buffer[16];
+    const uint8_t dma_float_count = (uint8_t)(sizeof(DMA_Buffer) / sizeof(DMA_Buffer[0]));
     DMA_Buffer[0] = FOC.Ia;
     DMA_Buffer[1] = gamma_deg;
     // DMA_Buffer[1] = FOC.Speed;
@@ -217,18 +222,25 @@ void ADC0_1_IRQHandler(void)
     //  DMA_Buffer[3] = FOC.Id;
     //  DMA_Buffer[4] = FOC.Iq;
     //  DMA_Buffer[5] = FOC.Ud_ref;
-    DMA_Buffer[2] = g_ld;
-    DMA_Buffer[3] = g_lq;
-    DMA_Buffer[4] = g_ldd;
-    DMA_Buffer[5] = g_lqq;
+    // DMA_Buffer[2] = g_ld;
+    // DMA_Buffer[3] = g_lq;
+    DMA_Buffer[2] = g_identIdFilt;
+    DMA_Buffer[3] = g_identIqFilt;
+    // DMA_Buffer[4] = g_ldd;
+    // DMA_Buffer[5] = g_lqq;
+    DMA_Buffer[4] = g_mtpaKNow;
+    DMA_Buffer[5] = g_mtpaMNow;
     DMA_Buffer[6] = g_lc;
     DMA_Buffer[7] = FOC.Id;
     DMA_Buffer[8] = FOC.Iq;
     DMA_Buffer[9] = FOC.Speed;
-    DMA_Buffer[10] = g_torqueGradRawNow;
+    DMA_Buffer[10] = g_identUdFilt;
     DMA_Buffer[11] = g_torqueGradFiltNow;
-    DMA_Buffer[12] = g_torqueGradNormNow;
-    justfloat(DMA_Buffer, 13);
+    DMA_Buffer[12] = g_identUqFilt;
+    DMA_Buffer[13] = psid_model;
+    DMA_Buffer[14] = psiq_model;
+    DMA_Buffer[15] = conf.Cp;
+    justfloat(DMA_Buffer, dma_float_count);
 
     Peripheral_SetPWMChangePoint();
   }

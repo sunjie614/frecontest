@@ -95,4 +95,9 @@ extern uint32_t systick_cnt;
 extern float IQtest;
 extern float IQtestMax;
 extern uint32_t systick_cnt1;
+extern volatile float g_identInputLpfFcHz;
+extern volatile float g_identUdFilt;
+extern volatile float g_identUqFilt;
+extern volatile float g_identIdFilt;
+extern volatile float g_identIqFilt;
 #endif /* _FOC_H_ */

@@ -1,5 +1,6 @@
 #include "foc.h"
 #include "MTPA.h"
+#include "control_profile.h"
 #include "hardware_interface.h"
 #include "identification.h"
 #include "onlineMTPA.h"
@@ -53,6 +54,71 @@ static inline void SVPWM_Generate(float Ualpha, float Ubeta, float inv_Vdc, FOC_
 static inline float Cal_Power(FOC_Parameter_t* foc);
 static inline float LowPassFilter_Update(LowPassFilter_t* filter, float x);
 static inline float sat(float x);
+static void LocalModelNumericMTPA(float Is_cmd, float* id_ref, float* iq_ref, float* gamma_deg);
+
+static float LocalModelTorqueAtGamma(float Is, float gamma)
+{
+  float id = Is * COS(gamma);
+  float iq = Is * SIN(gamma);
+  return onlineMTPA_torque_proxy(id, iq);
+}
+
+static void LocalModelNumericMTPA(float Is_cmd, float* id_ref, float* iq_ref, float* gamma_deg_out)
+{
+  const uint8_t iter_count = 12u;
+  const float pi = 3.1415926f;
+  const float gr = 0.61803398875f;
+  float Is = fabsf(Is_cmd);
+  float sign = (Is_cmd >= 0.0f) ? 1.0f : -1.0f;
+
+  if (Is < 1e-6f)
+  {
+    if (id_ref) *id_ref = 0.0f;
+    if (iq_ref) *iq_ref = 0.0f;
+    if (gamma_deg_out) *gamma_deg_out = 45.0f;
+    return;
+  }
+
+  float lo = g_gammaMin;
+  float hi = g_gammaMax;
+  if (lo < 0.0f) lo = 0.0f;
+  if (hi > 0.5f * pi) hi = 0.5f * pi;
+  if (hi <= lo)
+  {
+    lo = 1e-3f;
+    hi = 0.5f * pi - 1e-3f;
+  }
+
+  float c = hi - (hi - lo) * gr;
+  float d = lo + (hi - lo) * gr;
+  float tc = LocalModelTorqueAtGamma(Is, c);
+  float td = LocalModelTorqueAtGamma(Is, d);
+
+  for (uint8_t i = 0u; i < iter_count; i++)
+  {
+    if (tc < td)
+    {
+      lo = c;
+      c = d;
+      tc = td;
+      d = lo + (hi - lo) * gr;
+      td = LocalModelTorqueAtGamma(Is, d);
+    }
+    else
+    {
+      hi = d;
+      d = c;
+      td = tc;
+      c = hi - (hi - lo) * gr;
+      tc = LocalModelTorqueAtGamma(Is, c);
+    }
+  }
+
+  float gamma = 0.5f * (lo + hi);
+  if (id_ref) *id_ref = Is * COS(gamma);
+  if (iq_ref) *iq_ref = sign * Is * SIN(gamma);
+  if (gamma_deg_out) *gamma_deg_out = gamma * (180.0f / pi);
+}
 // SECTION - FOC Main
 void FOC_Main(void)
 {
@@ -139,6 +205,7 @@ void FOC_Main(void)
       Speed_Count++;
       if (Speed_Count > 9)
       {
+        g_prof_speed_cycle_hit = 1u;
         Speed_Count = 0;
         Speed_Ramp.target = Speed_Ref;
 
@@ -154,12 +221,21 @@ void FOC_Main(void)
 
         uint8_t ok;
 
-        onlineMTPA_incL_from_i(id, iq, &Ldd_est, &Lqq_est, &Ldq_est);
+        float Ldd_tmp = Ldd_est;
+        float Lqq_tmp = Lqq_est;
+        float Ldq_tmp = Ldq_est;
+        onlineMTPA_incL_from_i(id, iq, &Ldd_tmp, &Lqq_tmp, &Ldq_tmp);
+        Ldd_est = Ldd_tmp;
+        Lqq_est = Lqq_tmp;
+        Ldq_est = Ldq_tmp;
         // float32_t Is2 = FOC.Id * FOC.Id + FOC.Iq * FOC.Iq;
         // static volatile float32_t IS_cmd = 0;
         // SQRT(Is2, &IS_cmd);
         float IS_cmd = Speed_PID.output;
-        onlineMTPA_mtpa_for_Is(IS_cmd, &id_modleref, &iq_modleref, &gamma_deg, &ok);
+        if (g_prof_force_is_cmd_enable != 0u)
+        {
+          IS_cmd = g_prof_force_is_cmd;
+        }
         if (enable_45 != 0.0f)
         {
           FOC.Iq_ref = IS_cmd * 0.70710678f;  // cos(45°) ≈ 0.7071
@@ -174,6 +250,36 @@ void FOC_Main(void)
         }
         else
         {
+          float id_ref_calc = id_modleref;
+          float iq_ref_calc = iq_modleref;
+          float gamma_calc = gamma_deg;
+          switch (ControlProfile_GetActiveMethod())
+          {
+            case MTPA_METHOD_LUT:
+            {
+              float iq_abs = fabsf(IS_cmd);
+              float iq_out = 0.0f;
+              MTPA_interp_by_Iq(mtpa_table, MTPA_TABLE_POINTS, iq_abs, &id_ref_calc, &iq_out);
+              iq_ref_calc = IS_cmd;
+              ok = 1u;
+              break;
+            }
+            case MTPA_METHOD_LOCAL_NUMERIC:
+            {
+              LocalModelNumericMTPA(IS_cmd, &id_ref_calc, &iq_ref_calc, &gamma_calc);
+              ok = 1u;
+              break;
+            }
+            case MTPA_METHOD_ANALYTIC_ONLINE:
+            default:
+            {
+              onlineMTPA_mtpa_for_Is(IS_cmd, &id_ref_calc, &iq_ref_calc, &gamma_calc, &ok);
+              break;
+            }
+          }
+          id_modleref = id_ref_calc;
+          iq_modleref = iq_ref_calc;
+          gamma_deg = gamma_calc;
           FOC.Iq_ref = iq_modleref;
           FOC.Id_ref = id_modleref;
         }

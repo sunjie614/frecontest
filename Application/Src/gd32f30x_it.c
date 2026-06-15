@@ -34,6 +34,7 @@ OF SUCH DAMAGE.
 
 #include "gd32f30x_it.h"
 #include "can.h"
+#include "control_profile.h"
 #include "foc.h"
 #include "gd32f30x.h"
 #include "hardware_interface.h"
@@ -148,11 +149,43 @@ uint32_t systick_cnt = 0;
 float IQtest = 0;
 float IQtestMax = 20.5F;
 uint32_t systick_cnt1 = 0;
+
+static uint32_t Timer1_DeltaTicks(uint32_t start, uint32_t end)
+{
+  uint32_t period = (TIMER_CAR(TIMER1) & TIMER_CAR_CARL) + 1u;
+  start &= TIMER_CNT_CNT;
+  end &= TIMER_CNT_CNT;
+
+  if (end >= start)
+  {
+    return end - start;
+  }
+
+  return (period - start) + end;
+}
+
+static uint32_t Timer1_TicksToCycles(uint32_t ticks)
+{
+  uint32_t tick_cycles = (TIMER_PSC(TIMER1) & TIMER_PSC_PSC) + 1u;
+  g_prof_tmr1_tick_cycles = tick_cycles;
+  return ticks * tick_cycles;
+}
+
 void ADC0_1_IRQHandler(void)
 {
-  uint32_t cnt_start = (TIMER_CNT(TIMER1));
+  uint32_t dwt_isr_start = DWT->CYCCNT;
+  uint32_t tmr1_isr_start = TIMER_CNT(TIMER1);
+  uint32_t dwt_comm_cycles = 0u;
+  uint32_t tmr1_comm_ticks = 0u;
+  uint8_t control_isr_handled = 0u;
+  uint8_t method = ControlProfile_GetActiveMethod();
+  g_prof_speed_cycle_hit = 0u;
+  g_prof_ls_solve_hit = 0u;
+
+  uint32_t cnt_start = tmr1_isr_start;
   if (adc_interrupt_flag_get(ADC0, ADC_INT_FLAG_EOIC))
   {
+    control_isr_handled = 1u;
     adc_interrupt_flag_clear(ADC0, ADC_INT_FLAG_EOIC);
 
     Peripheral_UpdateCurrent();
@@ -240,11 +273,15 @@ void ADC0_1_IRQHandler(void)
     DMA_Buffer[13] = psid_model;
     DMA_Buffer[14] = psiq_model;
     DMA_Buffer[15] = conf.Cp;
+    uint32_t dwt_comm_start = DWT->CYCCNT;
+    uint32_t tmr1_comm_start = TIMER_CNT(TIMER1);
     justfloat(DMA_Buffer, dma_float_count);
+    dwt_comm_cycles += DWT->CYCCNT - dwt_comm_start;
+    tmr1_comm_ticks += Timer1_DeltaTicks(tmr1_comm_start, TIMER_CNT(TIMER1));
 
     Peripheral_SetPWMChangePoint();
   }
-  uint32_t cnt_end = (TIMER_CNT(TIMER1));
+  uint32_t cnt_end = TIMER_CNT(TIMER1);
 
   if (cnt_end > cnt_start)
   {
@@ -252,6 +289,45 @@ void ADC0_1_IRQHandler(void)
     if (systick_cnt1 > systick_cnt)
     {
       systick_cnt = systick_cnt1;
+    }
+  }
+
+  if (control_isr_handled)
+  {
+    uint32_t dwt_end = DWT->CYCCNT;
+    uint32_t dwt_raw_cycles = dwt_end - dwt_isr_start;
+    uint32_t tmr1_raw_cycles = Timer1_TicksToCycles(Timer1_DeltaTicks(tmr1_isr_start, cnt_end));
+    uint32_t tmr1_comm_cycles = Timer1_TicksToCycles(tmr1_comm_ticks);
+    uint8_t dwt_ready = (((CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk) != 0u) &&
+                         ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0u) &&
+                         (dwt_raw_cycles != 0u)) ?
+                            1u :
+                            0u;
+    uint32_t raw_cycles = dwt_ready ? dwt_raw_cycles : tmr1_raw_cycles;
+    uint32_t comm_cycles = dwt_ready ? dwt_comm_cycles : tmr1_comm_cycles;
+    uint32_t control_cycles = raw_cycles;
+    if (control_cycles >= comm_cycles)
+    {
+      control_cycles -= comm_cycles;
+    }
+
+    g_prof_timer_src = dwt_ready ? 0u : 1u;
+    g_prof_dwt_ok = dwt_ready;
+    g_prof_dwt_demcr = CoreDebug->DEMCR;
+    g_prof_dwt_ctrl = DWT->CTRL;
+    g_prof_dwt_cyccnt = dwt_end;
+    g_prof_last_isr_cycles = raw_cycles;
+    g_prof_last_ctrl_cycles = control_cycles;
+    g_prof_last_comm_cycles = comm_cycles;
+
+    ControlProfile_Record(method, PROFILE_METRIC_ALL_ISR, control_cycles);
+    if (g_prof_speed_cycle_hit)
+    {
+      ControlProfile_Record(method, PROFILE_METRIC_SPEED_CYCLE_ISR, control_cycles);
+    }
+    if (g_prof_ls_solve_hit)
+    {
+      ControlProfile_Record(method, PROFILE_METRIC_LS_SOLVE_ISR, control_cycles);
     }
   }
 }

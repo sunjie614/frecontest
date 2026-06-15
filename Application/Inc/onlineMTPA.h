@@ -69,6 +69,14 @@ extern "C"
   extern volatile float g_torqueGradRestartDeltaIs;  /* A，重启辨识电流增量阈值 */
   extern volatile uint8_t g_identFrozenByTorqueGrad; /* 1: 因转矩偏导被冻结 */
   extern volatile uint8_t g_identifying;             /* 1: 当前周期正在辨识采集 */
+  extern volatile uint8_t g_ident_gate_code;         /* 0采集中，1未使能，2电流小，3速度低，4电压饱和，5电压坏，6等电流变化，7转矩梯度冻结，8稳态冻结，9强制求解 */
+  extern volatile float g_ident_last_is;             /* 最近一次辨识入口电流幅值(A) */
+  extern volatile float g_ident_last_abs_we;         /* 最近一次辨识入口电角速度绝对值(rad/s) */
+  extern volatile uint16_t g_ident_bin_cnt;          /* 当前bin内已累计10k采样点数 */
+  extern volatile uint32_t g_ident_bins_acc;         /* 已累计完成的bin数 */
+  extern volatile uint16_t g_ident_solve_cnt;        /* 距离下次求解已累计的bin数 */
+  extern volatile uint32_t g_ident_solve_hits;       /* 已触发最小二乘求解次数 */
+  extern volatile uint8_t g_prof_force_ls_once;      /* A2L写1后，下一次10k辨识调用强制执行一次LS求解并自动清0 */
   extern volatile float g_mtpaThetaRad;              /* MTPA 输出电流角(rad) */
   extern volatile int8_t g_mtpaIqSign;               /* MTPA 输出 iq 符号(+1/-1) */
   extern volatile float g_torqueProxyNow;            /* 当前角度下转矩代理值 */

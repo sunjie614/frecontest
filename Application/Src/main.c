@@ -2,6 +2,7 @@
 #include "adc.h"
 #include "can.h"
 #include "com.h"
+#include "control_profile.h"
 #include "gd32f30x_gpio.h"
 #include "gpio.h"
 #include "hardware_interface.h"
@@ -23,6 +24,7 @@ int main(void)
   systick_config();  // systick provides delay_ms
   TIM1_Init();       // TIM1 provides delay_us
   DWT_Init();
+  ControlProfile_ResetAll();
   /* initialize Serial port */
   //< For USART DMA, USART must be initialized before DMA >//
   USART_Init(&husart0);
@@ -51,6 +53,7 @@ int main(void)
 
   while (1)
   {
+    ControlProfile_ServiceMethodSelect();
     COM_CANProtocol();
     COM_SCIProtocol();
     // COM_DAQProtocol(systick_ms); Use CCP DAQ may cause PiSnoop display offline

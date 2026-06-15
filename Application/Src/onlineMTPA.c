@@ -1,6 +1,7 @@
 
 
 #include "onlineMTPA.h"
+#include "control_profile.h"
 #include <math.h>
 #include <string.h>
 
@@ -38,6 +39,14 @@ volatile float g_torqueGradFiltFcHz = 20.0f;
 volatile float g_torqueGradRestartDeltaIs = 0.5f;
 volatile uint8_t g_identFrozenByTorqueGrad = 0u;
 volatile uint8_t g_identifying = 0u;
+volatile uint8_t g_ident_gate_code = 0u;
+volatile float g_ident_last_is = 0.0f;
+volatile float g_ident_last_abs_we = 0.0f;
+volatile uint16_t g_ident_bin_cnt = 0u;
+volatile uint32_t g_ident_bins_acc = 0u;
+volatile uint16_t g_ident_solve_cnt = 0u;
+volatile uint32_t g_ident_solve_hits = 0u;
+volatile uint8_t g_prof_force_ls_once = 0u;
 volatile float g_mtpaThetaRad = 0.0f;
 volatile int8_t g_mtpaIqSign = 1;
 volatile float g_torqueProxyNow = 0.0f;
@@ -269,6 +278,7 @@ static void update_confidence_obs(const float Sreg[5][5], const float Ad[5], con
 static void abort_current_bin(void)
 {
   st.cnt = 0u;
+  g_ident_bin_cnt = 0u;
   st.sum_bd = 0.0f;
   st.sum_bq = 0.0f;
   for (int i = 0; i < 5; i++)
@@ -290,6 +300,8 @@ static void clear_ident_history(void)
   memset(st.t, 0, sizeof(st.t));
   st.bins_acc = 0u;
   st.solve_cnt = 0u;
+  g_ident_bins_acc = 0u;
+  g_ident_solve_cnt = 0u;
   abort_current_bin();
 }
 
@@ -531,6 +543,14 @@ void onlineMTPA_init(void)
   s_waitRecountByDeltaIs = 0u;
   g_identFrozenByTorqueGrad = 0u;
   g_identifying = 0u;
+  g_ident_gate_code = 0u;
+  g_ident_last_is = 0.0f;
+  g_ident_last_abs_we = 0.0f;
+  g_ident_bin_cnt = 0u;
+  g_ident_bins_acc = 0u;
+  g_ident_solve_cnt = 0u;
+  g_ident_solve_hits = 0u;
+  g_prof_force_ls_once = 0u;
   g_mtpaThetaRad = 0.0f;
   g_mtpaIqSign = 1;
   g_torqueProxyNow = 0.0f;
@@ -569,6 +589,14 @@ void onlineMTPA_reset_ident(void)
   s_waitRecountByDeltaIs = 0u;
   g_identFrozenByTorqueGrad = 0u;
   g_identifying = 0u;
+  g_ident_gate_code = 0u;
+  g_ident_last_is = 0.0f;
+  g_ident_last_abs_we = 0.0f;
+  g_ident_bin_cnt = 0u;
+  g_ident_bins_acc = 0u;
+  g_ident_solve_cnt = 0u;
+  g_ident_solve_hits = 0u;
+  g_prof_force_ls_once = 0u;
   g_mtpaThetaRad = 0.0f;
   g_mtpaIqSign = 1;
   g_torqueProxyNow = 0.0f;
@@ -777,19 +805,137 @@ static void update_torque_grad_freeze(float Is, uint8_t base_gate_ok)
   }
 }
 
+static void run_ls_solve_once(const float Ad[5], const float Aq[5], float bd, float bq,
+                              float id_end, float iq_end)
+{
+  g_prof_ls_solve_hit = 1u;
+  g_ident_solve_hits++;
+  st.solve_cnt = 0u;
+  g_ident_solve_cnt = st.solve_cnt;
+
+  update_alpha();
+  update_output_alpha_10k();
+
+  float Sreg[5][5];
+  memcpy(Sreg, st.S, sizeof(Sreg));
+  float lam = (g_lambda > 0.0f) ? g_lambda : 0.0f;
+  for (int i = 0; i < 5; i++) Sreg[i][i] += lam;
+
+  if (g_fixLdLq)
+  {
+    float ld_fix = g_ld;
+    float lq_fix = g_lq;
+    float Suu[3][3];
+    float rhs[3];
+    int iu[3] = {1, 3, 4};
+    int ifx[2] = {0, 2};
+    float xfix[2] = {ld_fix, lq_fix};
+
+    for (int r = 0; r < 3; r++)
+    {
+      int rr = iu[r];
+      float tmp = st.t[rr];
+      for (int k = 0; k < 2; k++)
+      {
+        int cc = ifx[k];
+        tmp -= Sreg[rr][cc] * xfix[k];
+      }
+      rhs[r] = tmp;
+
+      for (int c = 0; c < 3; c++)
+      {
+        int cc = iu[c];
+        Suu[r][c] = Sreg[rr][cc];
+      }
+    }
+
+    float xu[3];
+    if (solve_spd_chol3(Suu, rhs, xu))
+    {
+      st.xhat[0] = ld_fix;
+      st.xhat[2] = lq_fix;
+      st.xhat[1] = xu[0];
+      st.xhat[3] = xu[1];
+      st.xhat[4] = xu[2];
+    }
+  }
+  else
+  {
+    float xnew[5];
+    if (solve_spd_chol5(Sreg, st.t, xnew))
+    {
+      for (int i = 0; i < 5; i++) st.xhat[i] = xnew[i];
+    }
+  }
+
+  float a = clampf(st.alpha, 0.0f, 1.0f);
+  float xhat_f_prev[5];
+  float xhat_f_cand[5];
+  for (int i = 0; i < 5; i++)
+  {
+    xhat_f_prev[i] = st.xhat_f[i];
+    xhat_f_cand[i] = st.xhat_f[i] + a * (st.xhat[i] - st.xhat_f[i]);
+  }
+
+  if (!g_enable_cfd_limit)
+  {
+    for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_cand[i];
+    update_confidence_obs(Sreg, Ad, Aq, bd, bq, id_end, iq_end);
+  }
+  else
+  {
+    for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_cand[i];
+    update_confidence_obs(Sreg, Ad, Aq, bd, bq, id_end, iq_end);
+    for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_prev[i];
+
+    float Cp_now = 0.0f;
+    float C_total = 0.0f;
+    float C_lo = 0.0f;
+    float C_hi = 1.0f;
+    get_confidence_state(&Cp_now, &C_total, &C_lo, &C_hi);
+
+    if ((Cp_now <= 0.0f) || (C_total <= C_lo))
+    {
+      /* 低可信：拒绝本次参数写回。 */
+    }
+    else if (C_total >= C_hi)
+    {
+      for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_cand[i];
+      publish_output_params(st.xhat_f);
+    }
+    else
+    {
+      float alphaC = confidence_alpha_from_total(C_total, C_lo, C_hi);
+      float one_minus = 1.0f - alphaC;
+      for (int i = 0; i < 5; i++)
+      {
+        st.xhat_f[i] = one_minus * xhat_f_prev[i] + alphaC * xhat_f_cand[i];
+      }
+      publish_output_params(st.xhat_f);
+    }
+  }
+}
+
 /* 10kHz 辨识 step */
 void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float Rs0, uint8_t flags)
 {
   float Is2 = id * id + iq * iq;
   float Is = sqrtf(Is2);
+  float abs_we = fabsf(we);
   uint8_t base_gate_ok = 1u;
 
   output_filter_step_10k(Is2);
   update_torqueGrad_alpha_10k();
   g_identifying = 0u;
+  g_ident_last_is = Is;
+  g_ident_last_abs_we = abs_we;
+  g_ident_bin_cnt = st.cnt;
+  g_ident_bins_acc = st.bins_acc;
+  g_ident_solve_cnt = st.solve_cnt;
+  g_ident_gate_code = 0u;
 
   if (Is < g_identIsMin) base_gate_ok = 0u;
-  if (fabsf(we) < g_identWeMin) base_gate_ok = 0u;
+  if (abs_we < g_identWeMin) base_gate_ok = 0u;
   if (g_freezeOnVsat && (flags & ONLINE_MTPA_FLAG_VSAT)) base_gate_ok = 0u;
   if (flags & ONLINE_MTPA_FLAG_BAD_V) base_gate_ok = 0u;
 
@@ -814,18 +960,47 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
           : 0u;
   update_torqueGrad_freeze_sel_by_count(ident_active_now);
 
+  if (g_prof_force_ls_once != 0u)
+  {
+    float Ad_force[5];
+    float Aq_force[5];
+
+    g_prof_force_ls_once = 0u;
+    g_ident_gate_code = 9u;
+    st.bins_acc = 40u;
+    st.solve_cnt = 1u;
+    g_ident_bins_acc = st.bins_acc;
+    g_ident_solve_cnt = st.solve_cnt;
+
+    for (int i = 0; i < 5; i++)
+    {
+      float scale = (float)(i + 1);
+      Ad_force[i] = 0.001f * scale;
+      Aq_force[i] = 0.0015f * scale;
+      st.S[i][i] += 1.0f;
+      st.t[i] += st.xhat[i];
+    }
+
+    run_ls_solve_once(Ad_force, Aq_force, 0.0f, 0.0f, id, iq);
+    abort_current_bin();
+    return;
+  }
+
   if (!g_identEnable)
   {
+    g_ident_gate_code = 1u;
     abort_current_bin();
     return;
   }
   if (s_waitRecountByDeltaIs)
   {
+    g_ident_gate_code = 6u;
     abort_current_bin();
     return;
   }
   if (g_identFrozenByTorqueGrad)
   {
+    g_ident_gate_code = 7u;
     abort_current_bin();
     return;
   }
@@ -841,21 +1016,25 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   /* 门控：低速/小电流/电压饱和冻结（直接不更新这一bin） */
   if (Is < g_identIsMin)
   {
+    g_ident_gate_code = 2u;
     abort_current_bin();
     return;
   }
-  if (fabsf(we) < g_identWeMin)
+  if (abs_we < g_identWeMin)
   {
+    g_ident_gate_code = 3u;
     abort_current_bin();
     return;
   }
   if (g_freezeOnVsat && (flags & ONLINE_MTPA_FLAG_VSAT))
   {
+    g_ident_gate_code = 4u;
     abort_current_bin();
     return;
   }
   if (flags & ONLINE_MTPA_FLAG_BAD_V)
   {
+    g_ident_gate_code = 5u;
     abort_current_bin();
     return;
   }
@@ -913,6 +1092,7 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
   }
 
   st.cnt++;
+  g_ident_bin_cnt = st.cnt;
 
   if (st.cnt < M) return;
 
@@ -929,6 +1109,7 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
     if ((did < g_steadyDidTh) && (diq < g_steadyDiqTh))
     {
       g_identifying = 0u;
+      g_ident_gate_code = 8u;
       abort_current_bin();
       return;
     }
@@ -976,6 +1157,9 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
 
   st.bins_acc++;
   st.solve_cnt++;
+  g_ident_bin_cnt = st.cnt;
+  g_ident_bins_acc = st.bins_acc;
+  g_ident_solve_cnt = st.solve_cnt;
 
   /* 解算间隔可调：每 g_solveDecim 个 bin 才解一次 */
   uint16_t dec = g_solveDecim;
@@ -983,127 +1167,7 @@ void onlineMTPA_step_10k(float vd, float vq, float id, float iq, float we, float
 
   if (st.bins_acc >= 40u && (st.solve_cnt >= dec))
   {
-    st.solve_cnt = 0u;
-
-    /* 更新平滑系数（binSamples 或 fc 可被上位机改） */
-    update_alpha();
-    update_output_alpha_10k();
-
-    /* Sreg = S + lambda*I */
-    float Sreg[5][5];
-    memcpy(Sreg, st.S, sizeof(Sreg));
-    float lam = (g_lambda > 0.0f) ? g_lambda : 0.0f;
-    for (int i = 0; i < 5; i++) Sreg[i][i] += lam;
-
-    /* 固定 ld,lq 时：解 3x3（ldd,lqq,lc）更省 */
-    if (g_fixLdLq)
-    {
-      /* x = [ld, ldd, lq, lqq, lc]
-         固定 idxF=[0,2]，未知 idxU=[1,3,4] */
-      float ld_fix = g_ld;
-      float lq_fix = g_lq;
-
-      float Suu[3][3];
-      float rhs[3];
-
-      /* rhs = t_u - S_uf * x_fixed */
-      /* idxU:1,3,4 ; idxF:0,2 */
-      int iu[3] = {1, 3, 4};
-      int ifx[2] = {0, 2};
-      float xfix[2] = {ld_fix, lq_fix};
-
-      for (int r = 0; r < 3; r++)
-      {
-        int rr = iu[r];
-        float tmp = st.t[rr];
-        for (int k = 0; k < 2; k++)
-        {
-          int cc = ifx[k];
-          tmp -= Sreg[rr][cc] * xfix[k];
-        }
-        rhs[r] = tmp;
-
-        for (int c = 0; c < 3; c++)
-        {
-          int cc = iu[c];
-          Suu[r][c] = Sreg[rr][cc];
-        }
-      }
-
-      float xu[3];
-      if (solve_spd_chol3(Suu, rhs, xu))
-      {
-        st.xhat[0] = ld_fix;
-        st.xhat[2] = lq_fix;
-        st.xhat[1] = xu[0]; /* ldd */
-        st.xhat[3] = xu[1]; /* lqq */
-        st.xhat[4] = xu[2]; /* lc  */
-      }
-      /* else: 保持上一次 st.xhat 不动 */
-    }
-    else
-    {
-      float xnew[5];
-      if (solve_spd_chol5(Sreg, st.t, xnew))
-      {
-        for (int i = 0; i < 5; i++) st.xhat[i] = xnew[i];
-      }
-    }
-
-    /* 参数平滑输出（低通） */
-    float a = clampf(st.alpha, 0.0f, 1.0f);
-    float xhat_f_prev[5];
-    float xhat_f_cand[5];
-    for (int i = 0; i < 5; i++)
-    {
-      xhat_f_prev[i] = st.xhat_f[i];
-      xhat_f_cand[i] = st.xhat_f[i] + a * (st.xhat[i] - st.xhat_f[i]);
-    }
-
-    if (!g_enable_cfd_limit)
-    {
-      /* 约束关闭：行为与原版本一致 */
-      for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_cand[i];
-      update_confidence_obs(Sreg, Ad, Aq, bd, bq, id_end, iq_end);
-    }
-    else
-    {
-      /* 约束开启：先用候选参数计算本次可信度，再决定是否写回 */
-      for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_cand[i];
-      update_confidence_obs(Sreg, Ad, Aq, bd, bq, id_end, iq_end);
-      for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_prev[i];
-
-      float Cp_now = 0.0f;
-      float C_total = 0.0f;
-      float C_lo = 0.0f;
-      float C_hi = 1.0f;
-      get_confidence_state(&Cp_now, &C_total, &C_lo, &C_hi);
-
-      if ((Cp_now <= 0.0f) || (C_total <= C_lo))
-      {
-        /* 低可信：拒绝本次参数写回，保持上一拍有效参数与全局参数不变 */
-      }
-      else if (C_total >= C_hi)
-      {
-        /* 高可信：按候选参数正常写回 */
-        for (int i = 0; i < 5; i++) st.xhat_f[i] = xhat_f_cand[i];
-        publish_output_params(st.xhat_f);
-      }
-      else
-      {
-        /* 中可信：在上一拍参数与候选参数之间做线性融合 */
-        float alphaC = confidence_alpha_from_total(C_total, C_lo, C_hi);
-        float one_minus = 1.0f - alphaC;
-        for (int i = 0; i < 5; i++)
-        {
-          st.xhat_f[i] = one_minus * xhat_f_prev[i] + alphaC * xhat_f_cand[i];
-        }
-        publish_output_params(st.xhat_f);
-      }
-    }
-
-    /* 写回全局参数（上位机也可读） */
-    /* output params are published by output_filter_step_10k() */
+    run_ls_solve_once(Ad, Aq, bd, bq, id_end, iq_end);
   }
 
   /* bin复位 */
